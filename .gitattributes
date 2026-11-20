@@ -1,0 +1,23 @@
+# Default: text files with CRLF in the working tree (Windows PowerShell 5.1 target).
+* text=auto eol=crlf
+
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+*.psd1  text eol=crlf
+*.cmd   text eol=crlf
+*.bat   text eol=crlf
+*.md    text eol=crlf
+*.json  text eol=crlf
+*.xml   text eol=crlf
+*.txt   text eol=crlf
+
+# Shell scripts must keep LF.
+*.sh    text eol=lf
+
+# GitHub Actions workflows: YAML, LF is conventional.
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+*.zip   binary
+*.png   binary
+*.ico   binary

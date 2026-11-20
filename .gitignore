@@ -1,0 +1,18 @@
+# Inventory output (real customer data) must never land in the repository.
+DPM-Bestandsaufnahme_*/
+DPM-Bestandsaufnahme_*.zip
+*.zip
+
+# Build and test output
+/dist/
+/out/
+/TestResults/
+testResults.xml
+coverage.xml
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
