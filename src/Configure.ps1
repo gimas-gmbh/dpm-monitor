@@ -368,7 +368,8 @@ function Update-Evaluation {
     try {
         $Ctx.DatasourceList.Items.Clear()
         if ($null -eq $Ctx.State) { return }
-        $Ctx.Evaluation = Invoke-DpmMonitorEvaluation -State $Ctx.State -Config $Ctx.Config -Now ([datetime]::UtcNow)
+        $now = if ($Ctx.FixedNow) { $Ctx.FixedNow } else { [datetime]::UtcNow }
+        $Ctx.Evaluation = Invoke-DpmMonitorEvaluation -State $Ctx.State -Config $Ctx.Config -Now $now
         $order = @{ Failed = 0; Warning = 1; Ok = 2; Excluded = 3 }
         foreach ($i in ($Ctx.Evaluation.Items | Sort-Object { $order[$_.Status] }, ProtectionGroup, LogicalPath)) {
             $row = New-Object Windows.Forms.ListViewItem($script:StatusText[$i.Status])
@@ -646,6 +647,7 @@ function New-Context {
         Config         = $null
         State          = $null
         Evaluation     = $null
+        FixedNow       = $null   # UTC; only for previews with synthetic data
         Dirty          = $false
         Form           = $null
         StatusLabel    = $null
@@ -682,7 +684,7 @@ function Start-Configuration {
     if (-not $inst.Installed -or -not $inst.ConfigExists) {
         if (-not $fromPackage) { Show-Message 'Die Installation ist unvollständig. Bitte aus dem Installationspaket neu installieren.' 'Error'; return }
         $config = Get-DpmMonitorDefaultConfig
-        $ok = Show-ConnectionDialog -Config $config -Heading "dpm-monitor $packageVersion installieren" -OkText 'Installieren'
+        $ok = Show-ConnectionDialog -Config $config -Heading "$script:Title $packageVersion installieren" -OkText 'Installieren'
         if (-not $ok) { return }
         try { Install-DpmMonitor -SourcePath $script:PackagePath -InstallPath $installPath -Config $config -Confirm:$false | Out-Null }
         catch { Show-Message "Installation fehlgeschlagen: $($_.Exception.Message)" 'Error'; return }
