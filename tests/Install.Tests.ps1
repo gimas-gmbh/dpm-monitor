@@ -2,7 +2,7 @@
     Import-Module (Join-Path $PSScriptRoot '..\src\DpmMonitor.psm1') -Force
     . (Join-Path $PSScriptRoot 'TestHelpers.ps1')
     $srcDir = Join-Path $PSScriptRoot '..\src'
-    $productFiles = 'DpmMonitor.psm1', 'Check.ps1', 'Configure.ps1', 'Konfigurieren.cmd'
+    $productFiles = 'DpmMonitor.psm1', 'Check.ps1', 'Configure.ps1', 'Konfigurieren.cmd', 'DpmMonitor.ico'
 
     function New-Package {
         $dir = Join-Path $TestDrive "package-$([guid]::NewGuid().ToString('N'))"

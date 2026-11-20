@@ -762,10 +762,21 @@ function Send-DpmMonitorPing {
         }
         catch {
             $lastError = $_.Exception.Message
+            # An HTTP 4xx answer means Healthchecks.io was reached but refused the
+            # ping (e.g. wrong URL): retrying will not help.
+            $code = $null
+            $response = Get-ObjectPropertyValue $_.Exception 'Response'
+            if ($null -ne $response) { try { $code = [int]$response.StatusCode } catch { $code = $null } }
+            if ($null -ne $code -and $code -ge 400 -and $code -lt 500) {
+                return [pscustomobject]@{
+                    Success = $false; Url = $url; StatusCode = $code; Attempts = $attempt; Rejected = $true
+                    Error = "Healthchecks.io lehnt die Meldung ab (HTTP $code). Ping-URL prüfen."
+                }
+            }
             if ($attempt -lt $RetryCount) { Start-Sleep -Seconds $RetryDelaySeconds }
         }
     }
-    [pscustomobject]@{ Success = $false; Url = $url; StatusCode = $null; Attempts = [Math]::Max(1, $RetryCount); Error = $lastError }
+    [pscustomobject]@{ Success = $false; Url = $url; StatusCode = $null; Attempts = [Math]::Max(1, $RetryCount); Rejected = $false; Error = $lastError }
 }
 
 # ---------------------------------------------------------------------------
@@ -983,6 +994,10 @@ function Invoke-DpmMonitorCheck {
         if ($ping.Success) {
             Write-DpmMonitorLog -Path $LogPath -Message "Healthchecks.io benachrichtigt (HTTP $($ping.StatusCode))."
         }
+        elseif ($ping.PSObject.Properties['Rejected'] -and $ping.Rejected) {
+            Write-DpmMonitorLog -Path $LogPath -Level ERROR -Message $ping.Error
+            $exitCode = 3
+        }
         else {
             Write-DpmMonitorLog -Path $LogPath -Level ERROR -Message "Healthchecks.io nicht erreichbar nach $($ping.Attempts) Versuch(en): $($ping.Error)"
             $exitCode = 3
@@ -1042,18 +1057,18 @@ function Read-DpmMonitorLastResult {
 
 $script:TaskName = 'DpmMonitor'
 $script:TaskPath = '\'
-$script:ProductFiles = @('DpmMonitor.psm1', 'Check.ps1', 'Configure.ps1', 'Konfigurieren.cmd')
-$script:ShortcutName = 'DPM-Überwachung.lnk'
+$script:ProductFiles = @('DpmMonitor.psm1', 'Check.ps1', 'Configure.ps1', 'Konfigurieren.cmd', 'DpmMonitor.ico')
+$script:ShortcutName = 'gimas DPM Monitor.lnk'
 
 function Get-DpmMonitorVersion {
     <#
         .SYNOPSIS
-        The version of this copy; with -WithCommit e.g. "0.1.14 (b29e88c5e0)".
+        The version of this copy; with -WithCommit e.g. "0.1.14+b29e88c5e0".
     #>
     [CmdletBinding()]
     [OutputType([string])]
     param([switch]$WithCommit)
-    if ($WithCommit -and $script:ModuleCommit) { "$script:ModuleVersion ($script:ModuleCommit)" }
+    if ($WithCommit -and $script:ModuleCommit) { "$script:ModuleVersion+$script:ModuleCommit" }
     else { $script:ModuleVersion }
 }
 
@@ -1167,8 +1182,8 @@ function Set-DpmMonitorShortcut {
         $link = $shell.CreateShortcut($paths.Shortcut)
         $link.TargetPath = Join-Path $InstallPath 'Konfigurieren.cmd'
         $link.WorkingDirectory = $InstallPath
-        $link.Description = 'DPM-Überwachung konfigurieren'
-        $link.IconLocation = "$env:SystemRoot\System32\imageres.dll,109"
+        $link.Description = 'gimas DPM Monitor konfigurieren'
+        $link.IconLocation = Join-Path $InstallPath 'DpmMonitor.ico'
         $link.Save()
     }
 }

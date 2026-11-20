@@ -78,13 +78,15 @@ Installation und Update
    Periode 4 Stunden, Grace Time 2 Stunden. Die Ping-URL kopieren.
 2. Diesen Ordner auf den DPM-Server kopieren.
 3. Konfigurieren.cmd doppelklicken und die Rechteerhöhung bestätigen.
+   Stammt die ZIP aus dem Internet, fragt Windows vorher nach
+   ("Herausgeber konnte nicht verifiziert werden"): "Ausführen" wählen.
 4. Ping-URL eintragen und "Installieren" wählen. Die erste Prüfung
    läuft sofort, das Ergebnis wird angezeigt.
 
 Bei einem Update dasselbe tun: die Konfiguration bleibt erhalten.
 
 Danach ist die Oberfläche über das Startmenü erreichbar
-("DPM-Überwachung"). Installiert wird nach C:\Program Files\DpmMonitor\.
+("gimas DPM Monitor"). Installiert wird nach C:\Program Files\DpmMonitor\.
 
 Weitere Informationen: https://github.com/gimas-gmbh/dpm-monitor
 "@

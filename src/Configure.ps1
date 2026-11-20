@@ -16,10 +16,38 @@ $ErrorActionPreference = 'Stop'
 $script:PackagePath = $PSScriptRoot
 Import-Module (Join-Path $script:PackagePath 'DpmMonitor.psm1') -Force
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+# Crisp on high-DPI screens (e.g. 4K): without this, Windows stretches the
+# DPI-unaware PowerShell window as a bitmap and the text gets blurry. Fonts
+# are given in points and scale by themselves; pixel sizes use Get-Px.
+if (-not ('DpmMonitorUi.Dpi' -as [type])) {
+    Add-Type -Namespace DpmMonitorUi -Name Dpi -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();'
+}
+[void][DpmMonitorUi.Dpi]::SetProcessDPIAware()
+$graphics = [Drawing.Graphics]::FromHwnd([IntPtr]::Zero)
+$script:Scale = $graphics.DpiX / 96
+$graphics.Dispose()
+
+function Get-Px {
+    param([double]$Value)
+    [int][Math]::Round($Value * $script:Scale)
+}
+
+function New-ScaledSize {
+    param([double]$Width, [double]$Height)
+    New-Object Drawing.Size((Get-Px $Width), (Get-Px $Height))
+}
+
+function New-ScaledPadding {
+    param([Parameter(ValueFromRemainingArguments)][double[]]$Value)
+    if ($Value.Count -eq 1) { return New-Object Windows.Forms.Padding((Get-Px $Value[0])) }
+    New-Object Windows.Forms.Padding((Get-Px $Value[0]), (Get-Px $Value[1]), (Get-Px $Value[2]), (Get-Px $Value[3]))
+}
 [Windows.Forms.Application]::EnableVisualStyles()
 
 $script:Font = New-Object Drawing.Font('Segoe UI', 9)
-$script:Title = 'DPM-Überwachung'
+$script:Title = 'gimas DPM Monitor'
+$script:IconFile = Join-Path $script:PackagePath 'DpmMonitor.ico'
+$script:Icon = if (Test-Path -LiteralPath $script:IconFile) { New-Object Drawing.Icon($script:IconFile) } else { $null }
 $script:StatusText = @{ Ok = 'OK'; Warning = 'Warnung'; Failed = 'Fehler'; Excluded = 'Ausgenommen' }
 $script:StatusColor = @{
     Ok       = [Drawing.Color]::FromArgb(230, 245, 230)
@@ -56,25 +84,27 @@ function New-Control {
 
 function New-Dialog {
     param([string]$Text, [int]$Width = 520, [int]$Height = 360)
-    New-Control Form @{
+    $dialog = New-Control Form @{
         Text            = $Text
-        ClientSize      = New-Object Drawing.Size($Width, $Height)
+        ClientSize      = (New-ScaledSize $Width $Height)
         StartPosition   = 'CenterParent'
         FormBorderStyle = 'FixedDialog'
         MaximizeBox     = $false
         MinimizeBox     = $false
         ShowInTaskbar   = $false
     }
+    if ($script:Icon) { $dialog.Icon = $script:Icon }
+    $dialog
 }
 
 # Vertical stack of rows inside a dialog.
 function New-Stack {
-    New-Control FlowLayoutPanel @{ Dock = 'Fill'; FlowDirection = 'TopDown'; WrapContents = $false; Padding = New-Object Windows.Forms.Padding(12); AutoScroll = $true }
+    New-Control FlowLayoutPanel @{ Dock = 'Fill'; FlowDirection = 'TopDown'; WrapContents = $false; Padding = (New-ScaledPadding 12); AutoScroll = $true }
 }
 
 function Add-DialogButton {
     param($Form, [string]$OkText = 'OK')
-    $panel = New-Control FlowLayoutPanel @{ Dock = 'Bottom'; FlowDirection = 'RightToLeft'; Height = 44; Padding = New-Object Windows.Forms.Padding(8) }
+    $panel = New-Control FlowLayoutPanel @{ Dock = 'Bottom'; FlowDirection = 'RightToLeft'; Height = (Get-Px 44); Padding = (New-ScaledPadding 8) }
     $cancel = New-Control Button @{ Text = 'Abbrechen'; DialogResult = 'Cancel'; AutoSize = $true }
     $ok = New-Control Button @{ Text = $OkText; AutoSize = $true }
     $panel.Controls.AddRange(@($cancel, $ok))
@@ -135,13 +165,13 @@ function Show-ConnectionDialog {
     param($Config, [string]$Heading, [string]$OkText = 'OK')
     $form = New-Dialog -Text $script:Title -Height 330
     $stack = New-Stack
-    $stack.Controls.Add((New-Control Label @{ Text = $Heading; AutoSize = $true; MaximumSize = New-Object Drawing.Size(480, 0); Font = New-Object Drawing.Font('Segoe UI', 10, [Drawing.FontStyle]::Bold) }))
-    $stack.Controls.Add((New-Control Label @{ AutoSize = $true; MaximumSize = New-Object Drawing.Size(480, 0); Text = "In Healthchecks.io einen Check für diesen Server anlegen: Periode 4 Stunden, Grace Time 2 Stunden. Dessen Ping-URL hier eintragen." }))
-    $stack.Controls.Add((New-Control Label @{ Text = 'Ping-URL'; AutoSize = $true; Margin = New-Object Windows.Forms.Padding(3, 12, 3, 0) }))
-    $url = New-Control TextBox @{ Width = 480; Text = [string]$Config.PingUrl }
+    $stack.Controls.Add((New-Control Label @{ Text = $Heading; AutoSize = $true; MaximumSize = (New-ScaledSize 480 0); Font = New-Object Drawing.Font('Segoe UI', 10, [Drawing.FontStyle]::Bold) }))
+    $stack.Controls.Add((New-Control Label @{ AutoSize = $true; MaximumSize = (New-ScaledSize 480 0); Text = "In Healthchecks.io einen Check für diesen Server anlegen: Periode 4 Stunden, Grace Time 2 Stunden. Dessen Ping-URL hier eintragen." }))
+    $stack.Controls.Add((New-Control Label @{ Text = 'Ping-URL'; AutoSize = $true; Margin = (New-ScaledPadding 3 12 3 0) }))
+    $url = New-Control TextBox @{ Width = (Get-Px 480); Text = [string]$Config.PingUrl }
     $stack.Controls.Add($url)
-    $stack.Controls.Add((New-Control Label @{ Text = 'Proxy (nur falls nötig, z. B. http://proxy:8080)'; AutoSize = $true; Margin = New-Object Windows.Forms.Padding(3, 12, 3, 0) }))
-    $proxy = New-Control TextBox @{ Width = 480; Text = [string]$Config.Proxy }
+    $stack.Controls.Add((New-Control Label @{ Text = 'Proxy (nur falls nötig, z. B. http://proxy:8080)'; AutoSize = $true; Margin = (New-ScaledPadding 3 12 3 0) }))
+    $proxy = New-Control TextBox @{ Width = (Get-Px 480); Text = [string]$Config.Proxy }
     $stack.Controls.Add($proxy)
     $form.Controls.Add($stack)
     $ok = Add-DialogButton -Form $form -OkText $OkText
@@ -164,15 +194,15 @@ function Show-ExclusionDialog {
     param($Item)
     $form = New-Dialog -Text 'Ausnahme festlegen' -Height 320
     $stack = New-Stack
-    $stack.Controls.Add((New-Control Label @{ Text = (Get-ItemLabel $Item); AutoSize = $true; MaximumSize = New-Object Drawing.Size(480, 0) }))
-    $single = New-Control RadioButton @{ Text = 'Nur diese Datenquelle'; Checked = $true; AutoSize = $true; Margin = New-Object Windows.Forms.Padding(3, 10, 3, 0) }
+    $stack.Controls.Add((New-Control Label @{ Text = (Get-ItemLabel $Item); AutoSize = $true; MaximumSize = (New-ScaledSize 480 0) }))
+    $single = New-Control RadioButton @{ Text = 'Nur diese Datenquelle'; Checked = $true; AutoSize = $true; Margin = (New-ScaledPadding 3 10 3 0) }
     $group = New-Control RadioButton @{ Text = ('Ganze Schutzgruppe „{0}“' -f $Item.ProtectionGroup); AutoSize = $true }
     $stack.Controls.AddRange(@($single, $group))
-    $stack.Controls.Add((New-Control Label @{ Text = 'Grund (Pflicht)'; AutoSize = $true; Margin = New-Object Windows.Forms.Padding(3, 10, 3, 0) }))
-    $reason = New-Control TextBox @{ Width = 480 }
+    $stack.Controls.Add((New-Control Label @{ Text = 'Grund (Pflicht)'; AutoSize = $true; Margin = (New-ScaledPadding 3 10 3 0) }))
+    $reason = New-Control TextBox @{ Width = (Get-Px 480) }
     $stack.Controls.Add($reason)
-    $limited = New-Control CheckBox @{ Text = 'Befristet bis einschließlich'; Checked = $true; AutoSize = $true; Margin = New-Object Windows.Forms.Padding(3, 10, 3, 0) }
-    $until = New-Control DateTimePicker @{ Format = 'Short'; Value = (Get-Date).Date.AddDays(30); Width = 140 }
+    $limited = New-Control CheckBox @{ Text = 'Befristet bis einschließlich'; Checked = $true; AutoSize = $true; Margin = (New-ScaledPadding 3 10 3 0) }
+    $until = New-Control DateTimePicker @{ Format = 'Short'; Value = (Get-Date).Date.AddDays(30); Width = (Get-Px 140) }
     $limited.Add_CheckedChanged({ $until.Enabled = $limited.Checked })
     $stack.Controls.AddRange(@($limited, $until))
     $form.Controls.Add($stack)
@@ -193,12 +223,12 @@ function Show-RuleDialog {
     param($Item)
     $form = New-Dialog -Text 'Erwarteten Rhythmus festlegen' -Height 390
     $stack = New-Stack
-    $stack.Controls.Add((New-Control Label @{ Text = (Get-ItemLabel $Item); AutoSize = $true; MaximumSize = New-Object Drawing.Size(480, 0) }))
-    $stack.Controls.Add((New-Control Label @{ AutoSize = $true; MaximumSize = New-Object Drawing.Size(480, 0); Text = 'Ersetzt den aus DPM gelesenen Zeitplan. Nur nötig, wenn der DPM-Zeitplan nicht passt.' }))
-    $single = New-Control RadioButton @{ Text = 'Nur diese Datenquelle'; Checked = $true; AutoSize = $true; Margin = New-Object Windows.Forms.Padding(3, 10, 3, 0) }
+    $stack.Controls.Add((New-Control Label @{ Text = (Get-ItemLabel $Item); AutoSize = $true; MaximumSize = (New-ScaledSize 480 0) }))
+    $stack.Controls.Add((New-Control Label @{ AutoSize = $true; MaximumSize = (New-ScaledSize 480 0); Text = 'Ersetzt den aus DPM gelesenen Zeitplan. Nur nötig, wenn der DPM-Zeitplan nicht passt.' }))
+    $single = New-Control RadioButton @{ Text = 'Nur diese Datenquelle'; Checked = $true; AutoSize = $true; Margin = (New-ScaledPadding 3 10 3 0) }
     $group = New-Control RadioButton @{ Text = ('Ganze Schutzgruppe „{0}“' -f $Item.ProtectionGroup); AutoSize = $true }
     $stack.Controls.AddRange(@($single, $group))
-    $preset = New-Control ComboBox @{ DropDownStyle = 'DropDownList'; Width = 220; Margin = New-Object Windows.Forms.Padding(3, 10, 3, 3) }
+    $preset = New-Control ComboBox @{ DropDownStyle = 'DropDownList'; Width = (Get-Px 220); Margin = (New-ScaledPadding 3 10 3 3) }
     [void]$preset.Items.AddRange($script:Presets)
     $preset.SelectedIndex = 0
     $stack.Controls.Add($preset)
@@ -212,13 +242,13 @@ function Show-RuleDialog {
     }
     $stack.Controls.Add($dayPanel)
     $timeRow = New-Control FlowLayoutPanel @{ AutoSize = $true; WrapContents = $false }
-    $timeRow.Controls.Add((New-Control Label @{ Text = 'Uhrzeit(en):'; AutoSize = $true; Margin = New-Object Windows.Forms.Padding(3, 6, 3, 3) }))
-    $times = New-Control TextBox @{ Width = 160; Text = '20:00' }
+    $timeRow.Controls.Add((New-Control Label @{ Text = 'Uhrzeit(en):'; AutoSize = $true; Margin = (New-ScaledPadding 3 6 3 3) }))
+    $times = New-Control TextBox @{ Width = (Get-Px 160); Text = '20:00' }
     $timeRow.Controls.Add($times)
     $stack.Controls.Add($timeRow)
     $hoursRow = New-Control FlowLayoutPanel @{ AutoSize = $true; WrapContents = $false }
-    $hoursRow.Controls.Add((New-Control Label @{ Text = 'Höchstalter (Stunden):'; AutoSize = $true; Margin = New-Object Windows.Forms.Padding(3, 6, 3, 3) }))
-    $hours = New-Control NumericUpDown @{ Minimum = 1; Maximum = 2000; Value = 26; Width = 80 }
+    $hoursRow.Controls.Add((New-Control Label @{ Text = 'Höchstalter (Stunden):'; AutoSize = $true; Margin = (New-ScaledPadding 3 6 3 3) }))
+    $hours = New-Control NumericUpDown @{ Minimum = 1; Maximum = 2000; Value = 26; Width = (Get-Px 80) }
     $hoursRow.Controls.Add($hours)
     $stack.Controls.Add($hoursRow)
 
@@ -261,11 +291,11 @@ function Show-ReportDialog {
     param([string]$Heading, [string]$Text)
     $form = New-Dialog -Text $script:Title -Width 640 -Height 420
     $form.FormBorderStyle = 'Sizable'
-    $label = New-Control Label @{ Text = $Heading; Dock = 'Top'; Height = 32; Padding = New-Object Windows.Forms.Padding(8, 8, 8, 0); Font = New-Object Drawing.Font('Segoe UI', 10, [Drawing.FontStyle]::Bold) }
+    $label = New-Control Label @{ Text = $Heading; Dock = 'Top'; Height = (Get-Px 32); Padding = (New-ScaledPadding 8 8 8 0); Font = New-Object Drawing.Font('Segoe UI', 10, [Drawing.FontStyle]::Bold) }
     $box = New-Control TextBox @{ Multiline = $true; ReadOnly = $true; ScrollBars = 'Vertical'; Dock = 'Fill'; Text = ($Text -replace "`r?`n", "`r`n"); Font = New-Object Drawing.Font('Consolas', 9) }
     $form.Controls.Add($box)
     $form.Controls.Add($label)
-    $panel = New-Control FlowLayoutPanel @{ Dock = 'Bottom'; FlowDirection = 'RightToLeft'; Height = 44; Padding = New-Object Windows.Forms.Padding(8) }
+    $panel = New-Control FlowLayoutPanel @{ Dock = 'Bottom'; FlowDirection = 'RightToLeft'; Height = (Get-Px 44); Padding = (New-ScaledPadding 8) }
     $close = New-Control Button @{ Text = 'Schließen'; DialogResult = 'OK'; AutoSize = $true }
     $panel.Controls.Add($close)
     $form.Controls.Add($panel)
@@ -321,7 +351,7 @@ function Update-StatusLine {
         $last = Read-DpmMonitorLastResult -Path $inst.ResultPath
         if ($last) {
             $txt = @{ Ok = 'OK'; Failed = 'FEHLER' }[[string]$last.Status]
-            if ($last.ExitCode -eq 3) { $txt = 'Healthchecks.io nicht erreicht' }
+            if ($last.ExitCode -eq 3) { $txt = 'Meldung an Healthchecks.io fehlgeschlagen' }
             $parts += "letzte Prüfung $(Format-LocalTime $last.Time): $txt"
         }
         if ($inst.NextRunTime) { $parts += "nächste $(Format-LocalTime $inst.NextRunTime)" }
@@ -430,21 +460,22 @@ function Save-Context {
 function Show-MainForm {
     param($Ctx, [scriptblock]$OnShown, [switch]$PassThru)
 
-    $form = New-Control Form @{ Text = $script:Title; ClientSize = New-Object Drawing.Size(1000, 620); StartPosition = 'CenterScreen'; MinimumSize = New-Object Drawing.Size(800, 480) }
+    $form = New-Control Form @{ Text = $script:Title; ClientSize = (New-ScaledSize 1000 620); StartPosition = 'CenterScreen'; MinimumSize = (New-ScaledSize 800 480) }
+    if ($script:Icon) { $form.Icon = $script:Icon }
     $Ctx.Form = $form
 
-    $Ctx.StatusLabel = New-Control Label @{ Dock = 'Top'; Height = 30; Padding = New-Object Windows.Forms.Padding(10, 8, 10, 0) }
+    $Ctx.StatusLabel = New-Control Label @{ Dock = 'Top'; Height = (Get-Px 30); Padding = (New-ScaledPadding 10 8 10 0) }
     $tabs = New-Control TabControl @{ Dock = 'Fill' }
 
     # --- Datenquellen ---
     $tabDs = New-Object Windows.Forms.TabPage('Datenquellen')
-    $Ctx.SummaryLabel = New-Control Label @{ Dock = 'Top'; Height = 26; Padding = New-Object Windows.Forms.Padding(4, 6, 4, 0); Text = 'Noch nicht geladen.' }
+    $Ctx.SummaryLabel = New-Control Label @{ Dock = 'Top'; Height = (Get-Px 26); Padding = (New-ScaledPadding 4 6 4 0); Text = 'Noch nicht geladen.' }
     $list = New-Control ListView @{ View = 'Details'; FullRowSelect = $true; MultiSelect = $false; Dock = 'Fill'; HideSelection = $false }
     foreach ($col in @(@('Status', 90), @('Schutzgruppe', 150), @('Server', 190), @('Pfad', 200), @('Letzter Punkt', 110), @('Hinweis', 420))) {
-        [void]$list.Columns.Add($col[0], $col[1])
+        [void]$list.Columns.Add($col[0], (Get-Px $col[1]))
     }
     $Ctx.DatasourceList = $list
-    $dsButtons = New-Control FlowLayoutPanel @{ Dock = 'Bottom'; Height = 40; Padding = New-Object Windows.Forms.Padding(2) }
+    $dsButtons = New-Control FlowLayoutPanel @{ Dock = 'Bottom'; Height = (Get-Px 40); Padding = (New-ScaledPadding 2) }
     $reload = New-Control Button @{ Text = 'Neu laden'; AutoSize = $true }
     $exclude = New-Control Button @{ Text = 'Ausnehmen …'; AutoSize = $true }
     $rule = New-Control Button @{ Text = 'Rhythmus festlegen …'; AutoSize = $true }
@@ -454,39 +485,39 @@ function Show-MainForm {
     # --- Ausnahmen und Regeln ---
     $tabRules = New-Object Windows.Forms.TabPage('Ausnahmen und Regeln')
     $rules = New-Control ListView @{ View = 'Details'; FullRowSelect = $true; MultiSelect = $false; Dock = 'Fill'; HideSelection = $false }
-    foreach ($col in @(@('Art', 130), @('Gilt für', 330), @('Details', 480))) { [void]$rules.Columns.Add($col[0], $col[1]) }
+    foreach ($col in @(@('Art', 130), @('Gilt für', 330), @('Details', 480))) { [void]$rules.Columns.Add($col[0], (Get-Px $col[1])) }
     $Ctx.RuleList = $rules
-    $ruleButtons = New-Control FlowLayoutPanel @{ Dock = 'Bottom'; Height = 40; Padding = New-Object Windows.Forms.Padding(2) }
+    $ruleButtons = New-Control FlowLayoutPanel @{ Dock = 'Bottom'; Height = (Get-Px 40); Padding = (New-ScaledPadding 2) }
     $removeRule = New-Control Button @{ Text = 'Entfernen'; AutoSize = $true }
     $ruleButtons.Controls.Add($removeRule)
     $tabRules.Controls.AddRange(@($rules, $ruleButtons))
 
     # --- Einstellungen ---
     $tabSettings = New-Object Windows.Forms.TabPage('Einstellungen')
-    $grid = New-Control TableLayoutPanel @{ Dock = 'Fill'; ColumnCount = 2; Padding = New-Object Windows.Forms.Padding(12); AutoScroll = $true }
+    $grid = New-Control TableLayoutPanel @{ Dock = 'Fill'; ColumnCount = 2; Padding = (New-ScaledPadding 12); AutoScroll = $true }
     [void]$grid.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('AutoSize')))
     [void]$grid.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 100)))
     $addRow = {
         param([string]$Text, $Control)
-        $grid.Controls.Add((New-Control Label @{ Text = $Text; AutoSize = $true; Margin = New-Object Windows.Forms.Padding(3, 7, 12, 3) }))
+        $grid.Controls.Add((New-Control Label @{ Text = $Text; AutoSize = $true; Margin = (New-ScaledPadding 3 7 12 3) }))
         $grid.Controls.Add($Control)
     }
     $urlRow = New-Control FlowLayoutPanel @{ AutoSize = $true; WrapContents = $false }
-    $Ctx.UrlLabel = New-Control Label @{ AutoSize = $true; Margin = New-Object Windows.Forms.Padding(3, 7, 12, 3) }
+    $Ctx.UrlLabel = New-Control Label @{ AutoSize = $true; Margin = (New-ScaledPadding 3 7 12 3) }
     $editUrl = New-Control Button @{ Text = 'Ändern …'; AutoSize = $true }
     $urlRow.Controls.AddRange(@($Ctx.UrlLabel, $editUrl))
     & $addRow 'Healthchecks.io' $urlRow
-    $Ctx.ThresholdInput = New-Control NumericUpDown @{ Minimum = 1; Maximum = 10; Value = [int]$Ctx.Config.MissedRunsThreshold; Width = 70 }
+    $Ctx.ThresholdInput = New-Control NumericUpDown @{ Minimum = 1; Maximum = 10; Value = [int]$Ctx.Config.MissedRunsThreshold; Width = (Get-Px 70) }
     & $addRow 'Fehler ab verpassten Terminen' $Ctx.ThresholdInput
-    $Ctx.BufferInput = New-Control NumericUpDown @{ Minimum = 0; Maximum = 24; Value = [int]$Ctx.Config.JobBufferHours; Width = 70 }
+    $Ctx.BufferInput = New-Control NumericUpDown @{ Minimum = 0; Maximum = 24; Value = [int]$Ctx.Config.JobBufferHours; Width = (Get-Px 70) }
     & $addRow 'Puffer für Jobdauer (Stunden)' $Ctx.BufferInput
     $fallbackRow = New-Control FlowLayoutPanel @{ AutoSize = $true; WrapContents = $false }
     $Ctx.FallbackCheck = New-Control CheckBox @{ Text = 'Höchstalter (Stunden), wenn kein Zeitplan ermittelbar ist:'; AutoSize = $true; Checked = ($null -ne $Ctx.Config.FallbackMaxAgeHours) }
-    $Ctx.FallbackInput = New-Control NumericUpDown @{ Minimum = 1; Maximum = 2000; Width = 70; Value = $(if ($Ctx.Config.FallbackMaxAgeHours) { [int]$Ctx.Config.FallbackMaxAgeHours } else { 26 }) }
+    $Ctx.FallbackInput = New-Control NumericUpDown @{ Minimum = 1; Maximum = 2000; Width = (Get-Px 70); Value = $(if ($Ctx.Config.FallbackMaxAgeHours) { [int]$Ctx.Config.FallbackMaxAgeHours } else { 26 }) }
     $Ctx.FallbackInput.Enabled = $Ctx.FallbackCheck.Checked
     $fallbackRow.Controls.AddRange(@($Ctx.FallbackCheck, $Ctx.FallbackInput))
     & $addRow 'Rückfallebene' $fallbackRow
-    $hint = New-Control Label @{ AutoSize = $true; MaximumSize = New-Object Drawing.Size(640, 0); Margin = New-Object Windows.Forms.Padding(3, 16, 3, 3); Text = "Ein einzelner verpasster Termin wird toleriert und nur im Bericht erwähnt. Ohne Zeitplan und ohne Rückfallebene gilt eine Datenquelle als Fehler.`n`nIn Healthchecks.io: Periode 4 Stunden, Grace Time 2 Stunden." }
+    $hint = New-Control Label @{ AutoSize = $true; MaximumSize = (New-ScaledSize 640 0); Margin = (New-ScaledPadding 3 16 3 3); Text = "Ein einzelner verpasster Termin wird toleriert und nur im Bericht erwähnt. Ohne Zeitplan und ohne Rückfallebene gilt eine Datenquelle als Fehler.`n`nIn Healthchecks.io: Periode 4 Stunden, Grace Time 2 Stunden." }
     $grid.Controls.Add((New-Control Label @{ Text = '' }))
     $grid.Controls.Add($hint)
     $tabSettings.Controls.Add($grid)
@@ -505,7 +536,7 @@ function Show-MainForm {
     $tabs.TabPages.AddRange(@($tabDs, $tabRules, $tabSettings, $tabLog))
 
     # --- bottom buttons ---
-    $bottom = New-Control FlowLayoutPanel @{ Dock = 'Bottom'; Height = 46; FlowDirection = 'RightToLeft'; Padding = New-Object Windows.Forms.Padding(8) }
+    $bottom = New-Control FlowLayoutPanel @{ Dock = 'Bottom'; Height = (Get-Px 46); FlowDirection = 'RightToLeft'; Padding = (New-ScaledPadding 8) }
     $close = New-Control Button @{ Text = 'Schließen'; AutoSize = $true }
     $Ctx.SaveButton = New-Control Button @{ Text = 'Speichern'; AutoSize = $true; Enabled = $false }
     $runNow = New-Control Button @{ Text = 'Jetzt prüfen'; AutoSize = $true }
@@ -591,6 +622,16 @@ function Show-MainForm {
     $Ctx.UrlLabel.Text = $Ctx.Config.PingUrl
     Update-RuleList $Ctx
     Set-Dirty $Ctx $false
+
+    # Keep the window on screen when the scaled default size is too large
+    # (e.g. 200 % scaling on a small display).
+    $area = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+    $maxWidth = [int]($area.Width * 0.95)
+    $maxHeight = [int]($area.Height * 0.95)
+    if ($form.Width -gt $maxWidth -or $form.Height -gt $maxHeight) {
+        $form.MinimumSize = New-Object Drawing.Size([Math]::Min($form.MinimumSize.Width, $maxWidth), [Math]::Min($form.MinimumSize.Height, $maxHeight))
+        $form.Size = New-Object Drawing.Size([Math]::Min($form.Width, $maxWidth), [Math]::Min($form.Height, $maxHeight))
+    }
     if ($PassThru) { return $form }
     [void]$form.ShowDialog()
 }

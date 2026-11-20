@@ -118,6 +118,30 @@ Describe 'Send-DpmMonitorPing' {
         $r.Error | Should -Be 'Die Verbindung wurde getrennt'
         Should -Invoke -ModuleName DpmMonitor Invoke-WebRequest -Times 3 -Exactly
         Should -Invoke -ModuleName DpmMonitor Start-Sleep -Times 2 -Exactly
+        $r.Rejected | Should -BeFalse
+    }
+    It 'does not retry when Healthchecks.io rejects the ping (HTTP 4xx)' {
+        Mock -ModuleName DpmMonitor Invoke-WebRequest {
+            $ex = New-Object Exception 'Der Remoteserver hat einen Fehler zurückgegeben: (400) Ungültige Anforderung.'
+            $ex | Add-Member -NotePropertyName Response -NotePropertyValue ([pscustomobject]@{ StatusCode = 400 })
+            throw $ex
+        }
+        $r = Send-DpmMonitorPing -PingUrl $validUrl -Status Ok -RetryCount 3
+        $r.Success | Should -BeFalse
+        $r.Rejected | Should -BeTrue
+        $r.StatusCode | Should -Be 400
+        $r.Error | Should -Be 'Healthchecks.io lehnt die Meldung ab (HTTP 400). Ping-URL prüfen.'
+        Should -Invoke -ModuleName DpmMonitor Invoke-WebRequest -Times 1 -Exactly
+    }
+    It 'retries on server errors (HTTP 5xx)' {
+        Mock -ModuleName DpmMonitor Invoke-WebRequest {
+            $ex = New-Object Exception '(503) Server nicht verfügbar'
+            $ex | Add-Member -NotePropertyName Response -NotePropertyValue ([pscustomobject]@{ StatusCode = 503 })
+            throw $ex
+        }
+        $r = Send-DpmMonitorPing -PingUrl $validUrl -Status Ok -RetryCount 2
+        $r.Rejected | Should -BeFalse
+        Should -Invoke -ModuleName DpmMonitor Invoke-WebRequest -Times 2 -Exactly
     }
     It 'truncates very long bodies' {
         Mock -ModuleName DpmMonitor Invoke-WebRequest { [pscustomobject]@{ StatusCode = 200 } }
@@ -193,6 +217,13 @@ Describe 'Invoke-DpmMonitorCheck' {
         $r = Invoke-DpmMonitorCheck -ConfigPath $configPath -LogPath $logPath -Now $now -TimeZone $Tz
         $r.ExitCode | Should -Be 3
         Get-Content -LiteralPath $logPath -Encoding UTF8 -Raw | Should -BeLike '*Healthchecks.io nicht erreichbar nach 3 Versuch(en): Zeitüberschreitung*'
+    }
+    It 'logs a rejected ping as such' {
+        Mock -ModuleName DpmMonitor Get-DpmMonitorState { New-CheckState '2026-11-19 20:05' }
+        Mock -ModuleName DpmMonitor Send-DpmMonitorPing { [pscustomobject]@{ Success = $false; Url = $PingUrl; StatusCode = 400; Attempts = 1; Rejected = $true; Error = 'Healthchecks.io lehnt die Meldung ab (HTTP 400). Ping-URL prüfen.' } }
+        $r = Invoke-DpmMonitorCheck -ConfigPath $configPath -LogPath $logPath -Now $now -TimeZone $Tz
+        $r.ExitCode | Should -Be 3
+        Get-Content -LiteralPath $logPath -Encoding UTF8 -Raw | Should -BeLike '*[[]ERROR] Healthchecks.io lehnt die Meldung ab (HTTP 400). Ping-URL prüfen.*'
     }
     It 'can check without pinging' {
         Mock -ModuleName DpmMonitor Get-DpmMonitorState { New-CheckState '2026-11-19 20:05' }

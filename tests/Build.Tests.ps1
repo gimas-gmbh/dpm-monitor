@@ -40,13 +40,13 @@ Describe 'Build-Release.ps1 with a given version' {
         $archive = [IO.Compression.ZipFile]::OpenRead($zip)
         try { $names = @($archive.Entries | ForEach-Object { $_.FullName }) }
         finally { $archive.Dispose() }
-        ($names | Sort-Object) | Should -Be (@('Check.ps1', 'Configure.ps1', 'DpmMonitor.psm1', 'Konfigurieren.cmd', 'README.txt') | ForEach-Object { "dpm-monitor-1.2.3/$_" })
+        ($names | Sort-Object) | Should -Be (@('Check.ps1', 'Configure.ps1', 'DpmMonitor.ico', 'DpmMonitor.psm1', 'Konfigurieren.cmd', 'README.txt') | ForEach-Object { "dpm-monitor-1.2.3/$_" })
     }
     It 'writes a matching SHA-256 file' {
         $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
         Get-Content -LiteralPath "$zip.sha256" -Raw | Should -Be "$hash  dpm-monitor-1.2.3.zip`n"
     }
-    It 'keeps the other sources byte for byte: <_>' -ForEach @('Check.ps1', 'Configure.ps1', 'Konfigurieren.cmd') {
+    It 'keeps the other sources byte for byte: <_>' -ForEach @('Check.ps1', 'Configure.ps1', 'Konfigurieren.cmd', 'DpmMonitor.ico') {
         $packed = [Convert]::ToBase64String((Read-ZipEntry $zip "dpm-monitor-1.2.3/$_"))
         $packed | Should -Be ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $root "src\$_"))))
     }
@@ -61,7 +61,7 @@ Describe 'Build-Release.ps1 with a given version' {
         $dir = Join-Path $TestDrive 'unpacked'
         [IO.Compression.ZipFile]::ExtractToDirectory($zip, $dir)
         $module = Join-Path $dir 'dpm-monitor-1.2.3\DpmMonitor.psm1'
-        & $exe -NoProfile -Command "Import-Module '$module'; Get-DpmMonitorVersion -WithCommit" | Should -Be '1.2.3 (abc1234def)'
+        & $exe -NoProfile -Command "Import-Module '$module'; Get-DpmMonitorVersion -WithCommit" | Should -Be '1.2.3+abc1234def'
     }
     It 'refuses a tag that does not match the version' {
         $r = Invoke-Build @('-OutDir', (Join-Path $TestDrive 'x'), '-Version', '1.2.3', '-Tag', 'v1.2.4')
