@@ -50,6 +50,8 @@ Die ZIP enthält Server-, Domänen- und Datenquellennamen des Kunden. Sie gehör
 - `src/DpmMonitor.psm1` enthält die Logik, `src/Check.ps1` ist das Prüfskript für die geplante Aufgabe,
   `src/Configure.ps1` die Oberfläche, `src/Konfigurieren.cmd` der Starter.
 - `tools\Save-ConfigurePreview.ps1 -OutDir <Ordner>` rendert die Oberfläche mit synthetischen Daten als PNG.
+- `tools\Test-InSandbox.ps1` testet Installation, geplante Aufgabe als SYSTEM, Update, Oberfläche und
+  Deinstallation in Windows Sandbox gegen ein Fake-DPM-Modul (Ergebnisse unter `%TEMP%\dpm-monitor-sandbox`).
 - Tests mit [Pester](https://pester.dev) 5, statische Analyse mit PSScriptAnalyzer (nur für die Entwicklung nötig):
 
   ```powershell
