@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # GitHub Actions in .github/workflows (pinned by commit SHA)
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      github-actions:
+        patterns: ['*']
+
+  # Local dotnet tools (dotnet-tools.json, currently nbgv)
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: monthly
