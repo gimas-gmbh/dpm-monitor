@@ -211,12 +211,14 @@ Describe 'Check.ps1' {
     It 'fails with exit code 1 when DPM is not available' {
         $configPath = Join-Path $TestDrive 'cfg.json'
         Save-DpmMonitorConfig -Config (New-TestConfig) -Path $configPath
-        $out = & $exe -NoProfile -ExecutionPolicy Bypass -File $script -ConfigPath $configPath -LogPath (Join-Path $TestDrive 'c.log') -NoPing
+        $resultPath = Join-Path $TestDrive 'c.json'
+        $out = & $exe -NoProfile -ExecutionPolicy Bypass -File $script -ConfigPath $configPath -LogPath (Join-Path $TestDrive 'c.log') -ResultPath $resultPath -NoPing
         $LASTEXITCODE | Should -Be 1
         ($out -join "`n") | Should -BeLike '*Prüfung selbst ist fehlgeschlagen*DPM-PowerShell-Modul nicht gefunden*'
+        (Read-DpmMonitorLastResult -Path $resultPath).ExitCode | Should -Be 1
     }
     It 'fails with exit code 2 without config' {
-        & $exe -NoProfile -ExecutionPolicy Bypass -File $script -ConfigPath (Join-Path $TestDrive 'none.json') -LogPath (Join-Path $TestDrive 'd.log') -NoPing | Out-Null
+        & $exe -NoProfile -ExecutionPolicy Bypass -File $script -ConfigPath (Join-Path $TestDrive 'none.json') -LogPath (Join-Path $TestDrive 'd.log') -ResultPath (Join-Path $TestDrive 'd.json') -NoPing | Out-Null
         $LASTEXITCODE | Should -Be 2
     }
 }

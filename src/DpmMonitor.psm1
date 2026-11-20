@@ -476,6 +476,9 @@ function Invoke-DpmMonitorEvaluation {
                 $item.Status = 'Excluded'
                 $until = [string](Get-ObjectPropertyValue $excluded 'Until')
                 $item.Reason = "Ausgenommen: $($excluded.Reason)" + $(if ($until) { " (bis $until)" } else { '' })
+                if ($null -ne $ds.LatestRecoveryPoint -and [datetime]$ds.LatestRecoveryPoint -ne [datetime]::MinValue) {
+                    $item.LatestRecoveryPoint = ConvertTo-DpmMonitorUtc -Time ([datetime]$ds.LatestRecoveryPoint) -TimeZone $TimeZone
+                }
                 $items.Add([pscustomobject]$item)
                 continue
             }
@@ -938,6 +941,7 @@ function Invoke-DpmMonitorCheck {
     param(
         [Parameter(Mandatory)][string]$ConfigPath,
         [Parameter(Mandatory)][string]$LogPath,
+        [string]$ResultPath,
         [switch]$NoPing,
         [datetime]$Now = [datetime]::UtcNow,
         [TimeZoneInfo]$TimeZone = [TimeZoneInfo]::Local
@@ -950,7 +954,9 @@ function Invoke-DpmMonitorCheck {
     catch {
         $msg = $_.Exception.Message
         Write-DpmMonitorLog -Path $LogPath -Level ERROR -Message $msg
-        return [pscustomobject]@{ Status = 'Failed'; ExitCode = 2; Report = $msg; Evaluation = $null; Ping = $null }
+        $result = [pscustomobject]@{ Status = 'Failed'; ExitCode = 2; Report = $msg; Evaluation = $null; Ping = $null }
+        if ($ResultPath) { Save-DpmMonitorLastResult -Path $ResultPath -Result $result -Now $Now }
+        return $result
     }
 
     $evaluation = $null
@@ -980,12 +986,310 @@ function Invoke-DpmMonitorCheck {
         }
     }
 
-    [pscustomobject]@{
+    $result = [pscustomobject]@{
         Status     = $status
         ExitCode   = $exitCode
         Report     = $report
         Evaluation = $evaluation
         Ping       = $ping
+    }
+    if ($ResultPath) { Save-DpmMonitorLastResult -Path $ResultPath -Result $result -Now $Now }
+    $result
+}
+
+# The configuration UI shows the outcome of the last run of the scheduled task.
+function Save-DpmMonitorLastResult {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][object]$Result,
+        [datetime]$Now = [datetime]::UtcNow
+    )
+    try {
+        $data = [pscustomobject]@{
+            Time        = $Now.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+            Version     = $script:ModuleVersion
+            Status      = $Result.Status
+            ExitCode    = $Result.ExitCode
+            Report      = $Result.Report
+            PingSuccess = if ($Result.Ping) { [bool]$Result.Ping.Success } else { $null }
+            PingError   = if ($Result.Ping) { $Result.Ping.Error } else { $null }
+        }
+        $dir = Split-Path -Parent $Path
+        if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        [IO.File]::WriteAllText($Path, ($data | ConvertTo-Json -Depth 3), (New-Object Text.UTF8Encoding($true)))
+    }
+    catch {
+        Write-Warning "Ergebnis konnte nicht gespeichert werden: $($_.Exception.Message)"
+    }
+}
+
+function Read-DpmMonitorLastResult {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    $data = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+    $data.Time = [datetime]::Parse($data.Time, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
+    $data
+}
+
+# ---------------------------------------------------------------------------
+# Installation, update, removal
+# ---------------------------------------------------------------------------
+
+$script:TaskName = 'DpmMonitor'
+$script:TaskPath = '\'
+$script:ProductFiles = @('DpmMonitor.psm1', 'Check.ps1', 'Configure.ps1', 'Konfigurieren.cmd')
+$script:ShortcutName = 'DPM-Überwachung.lnk'
+
+function Get-DpmMonitorVersion {
+    [CmdletBinding()]
+    param()
+    $script:ModuleVersion
+}
+
+function Get-DpmMonitorPath {
+    <#
+        .SYNOPSIS
+        Paths of an installation. The install folder lies below Program Files,
+        so only administrators can change what the SYSTEM task runs.
+    #>
+    [CmdletBinding()]
+    param([string]$InstallPath = (Join-Path $env:ProgramFiles 'DpmMonitor'))
+    [pscustomobject]@{
+        InstallPath = $InstallPath
+        ConfigPath  = Join-Path $InstallPath 'config.json'
+        LogPath     = Join-Path $InstallPath 'logs\dpm-monitor.log'
+        ResultPath  = Join-Path $InstallPath 'last-result.json'
+        Shortcut    = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\$script:ShortcutName"
+    }
+}
+
+function Get-DpmMonitorFileVersion {
+    param([string]$ModulePath)
+    if (-not (Test-Path -LiteralPath $ModulePath -PathType Leaf)) { return $null }
+    $m = [regex]::Match((Get-Content -LiteralPath $ModulePath -Raw -Encoding UTF8), "\`$script:ModuleVersion\s*=\s*'([^']+)'")
+    if ($m.Success) { $m.Groups[1].Value } else { $null }
+}
+
+function Compare-DpmMonitorVersion {
+    [CmdletBinding()]
+    [OutputType([int])]
+    param([string]$Left, [string]$Right)
+    $l = $null; $r = $null
+    if (-not [version]::TryParse($Left, [ref]$l)) { $l = [version]'0.0' }
+    if (-not [version]::TryParse($Right, [ref]$r)) { $r = [version]'0.0' }
+    $l.CompareTo($r)
+}
+
+function Get-DpmMonitorInstallation {
+    <#
+        .SYNOPSIS
+        Describes the installed copy and its scheduled task.
+    #>
+    [CmdletBinding()]
+    param([string]$InstallPath = (Join-Path $env:ProgramFiles 'DpmMonitor'))
+
+    $paths = Get-DpmMonitorPath -InstallPath $InstallPath
+    $task = Get-ScheduledTask -TaskName $script:TaskName -TaskPath $script:TaskPath -ErrorAction SilentlyContinue
+    $info = $null
+    if ($task) { $info = Get-ScheduledTaskInfo -TaskName $script:TaskName -TaskPath $script:TaskPath -ErrorAction SilentlyContinue }
+    $version = Get-DpmMonitorFileVersion -ModulePath (Join-Path $InstallPath 'DpmMonitor.psm1')
+
+    [pscustomobject]@{
+        InstallPath    = $InstallPath
+        Installed      = $null -ne $version
+        Version        = $version
+        ConfigPath     = $paths.ConfigPath
+        ConfigExists   = Test-Path -LiteralPath $paths.ConfigPath -PathType Leaf
+        LogPath        = $paths.LogPath
+        ResultPath     = $paths.ResultPath
+        TaskExists     = $null -ne $task
+        TaskState      = if ($task) { [string]$task.State } else { $null }
+        LastRunTime    = if ($info) { $info.LastRunTime } else { $null }
+        LastTaskResult = if ($info) { $info.LastTaskResult } else { $null }
+        NextRunTime    = if ($info) { $info.NextRunTime } else { $null }
+    }
+}
+
+function Get-DpmMonitorExecutionPolicyWarning {
+    <#
+        .SYNOPSIS
+        A policy set by Group Policy beats -ExecutionPolicy Bypass. AllSigned
+        stops the unsigned scripts of the scheduled task.
+    #>
+    [CmdletBinding()]
+    param()
+    $machine = [string](Get-ExecutionPolicy -Scope MachinePolicy)
+    if ($machine -eq 'AllSigned') {
+        return 'Per Gruppenrichtlinie ist die Ausführungsrichtlinie „AllSigned“ gesetzt. Die geplante Aufgabe kann die unsignierten Skripte von dpm-monitor dann nicht ausführen.'
+    }
+    $null
+}
+
+function Register-DpmMonitorTask {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][string]$InstallPath,
+        [ValidateRange(1, 24)][int]$IntervalHours = 4
+    )
+    $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $check = Join-Path $InstallPath 'Check.ps1'
+    $action = New-ScheduledTaskAction -Execute $powershell -WorkingDirectory $InstallPath `
+        -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$check`""
+    $start = (Get-Date).Date.AddHours((Get-Date).Hour + 1)
+    $trigger = New-ScheduledTaskTrigger -Once -At $start -RepetitionInterval (New-TimeSpan -Hours $IntervalHours)
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Hours 1) -MultipleInstances IgnoreNew
+    if ($PSCmdlet.ShouldProcess($script:TaskName, 'Geplante Aufgabe registrieren')) {
+        Register-ScheduledTask -TaskName $script:TaskName -TaskPath $script:TaskPath -Action $action -Trigger $trigger `
+            -Principal $principal -Settings $settings -Force `
+            -Description 'dpm-monitor: prüft die DPM-Sicherungen und meldet das Ergebnis an Healthchecks.io.' | Out-Null
+    }
+}
+
+function Set-DpmMonitorShortcut {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][string]$InstallPath)
+    $paths = Get-DpmMonitorPath -InstallPath $InstallPath
+    if ($PSCmdlet.ShouldProcess($paths.Shortcut, 'Verknüpfung anlegen')) {
+        $shell = New-Object -ComObject WScript.Shell
+        $link = $shell.CreateShortcut($paths.Shortcut)
+        $link.TargetPath = Join-Path $InstallPath 'Konfigurieren.cmd'
+        $link.WorkingDirectory = $InstallPath
+        $link.Description = 'DPM-Überwachung konfigurieren'
+        $link.IconLocation = "$env:SystemRoot\System32\imageres.dll,109"
+        $link.Save()
+    }
+}
+
+# Only Administrators and SYSTEM may read the config: the ping URL lets
+# anyone report "ok" for this server.
+function Protect-DpmMonitorConfigFile {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+    $acl = New-Object Security.AccessControl.FileSecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($sid in 'S-1-5-32-544', 'S-1-5-18') {
+        $id = New-Object Security.Principal.SecurityIdentifier($sid)
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($id, 'FullControl', 'Allow')))
+    }
+    Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
+function Install-DpmMonitor {
+    <#
+        .SYNOPSIS
+        Installs or updates dpm-monitor from a package folder: copies the
+        scripts, keeps an existing config unless a new one is given,
+        registers the scheduled task and the start menu shortcut.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][string]$SourcePath,
+        [string]$InstallPath = (Join-Path $env:ProgramFiles 'DpmMonitor'),
+        [object]$Config,
+        [ValidateRange(1, 24)][int]$IntervalHours = 4
+    )
+
+    foreach ($f in $script:ProductFiles) {
+        if (-not (Test-Path -LiteralPath (Join-Path $SourcePath $f) -PathType Leaf)) {
+            throw "Installationspaket unvollständig, es fehlt: $f"
+        }
+    }
+    $paths = Get-DpmMonitorPath -InstallPath $InstallPath
+    if ($Config) {
+        $errors = @(Test-DpmMonitorConfig -Config $Config)
+        if ($errors.Count -gt 0) { throw "Konfiguration ungültig: $($errors -join ' ')" }
+    }
+    elseif (-not (Test-Path -LiteralPath $paths.ConfigPath -PathType Leaf)) {
+        throw 'Für eine Neuinstallation wird eine Konfiguration (Ping-URL) benötigt.'
+    }
+
+    if (-not $PSCmdlet.ShouldProcess($InstallPath, 'dpm-monitor installieren')) { return }
+
+    if (-not (Test-Path -LiteralPath $InstallPath)) { New-Item -ItemType Directory -Path $InstallPath -Force | Out-Null }
+    $samePlace = [IO.Path]::GetFullPath($SourcePath).TrimEnd('\') -eq [IO.Path]::GetFullPath($InstallPath).TrimEnd('\')
+    if (-not $samePlace) {
+        foreach ($f in $script:ProductFiles) {
+            $target = Join-Path $InstallPath $f
+            Copy-Item -LiteralPath (Join-Path $SourcePath $f) -Destination $target -Force
+            # Files from a downloaded ZIP carry the internet zone mark.
+            Unblock-File -LiteralPath $target
+        }
+    }
+    if ($Config) {
+        Save-DpmMonitorConfig -Config $Config -Path $paths.ConfigPath
+        Protect-DpmMonitorConfigFile -Path $paths.ConfigPath
+    }
+    Register-DpmMonitorTask -InstallPath $InstallPath -IntervalHours $IntervalHours
+    Set-DpmMonitorShortcut -InstallPath $InstallPath
+    Get-DpmMonitorInstallation -InstallPath $InstallPath
+}
+
+function Uninstall-DpmMonitor {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [string]$InstallPath = (Join-Path $env:ProgramFiles 'DpmMonitor'),
+        [switch]$KeepConfig
+    )
+    $paths = Get-DpmMonitorPath -InstallPath $InstallPath
+    if (-not $PSCmdlet.ShouldProcess($InstallPath, 'dpm-monitor entfernen')) { return }
+
+    if (Get-ScheduledTask -TaskName $script:TaskName -TaskPath $script:TaskPath -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName $script:TaskName -TaskPath $script:TaskPath -Confirm:$false
+    }
+    if (Test-Path -LiteralPath $paths.Shortcut) { Remove-Item -LiteralPath $paths.Shortcut -Force }
+
+    $remove = @($script:ProductFiles | ForEach-Object { Join-Path $InstallPath $_ }) + $paths.ResultPath
+    if (-not $KeepConfig) { $remove += $paths.ConfigPath }
+    foreach ($p in $remove) {
+        if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }
+    }
+    $logDir = Split-Path -Parent $paths.LogPath
+    if (-not $KeepConfig -and (Test-Path -LiteralPath $logDir)) { Remove-Item -LiteralPath $logDir -Recurse -Force }
+    if ((Test-Path -LiteralPath $InstallPath) -and -not (Get-ChildItem -LiteralPath $InstallPath -Force)) {
+        Remove-Item -LiteralPath $InstallPath -Force
+    }
+}
+
+function Start-DpmMonitorTask {
+    <#
+        .SYNOPSIS
+        Runs the scheduled task now (as SYSTEM, exactly like the regular run)
+        and waits for its result.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [string]$InstallPath = (Join-Path $env:ProgramFiles 'DpmMonitor'),
+        [int]$TimeoutSeconds = 900,
+        [scriptblock]$OnWait
+    )
+    $paths = Get-DpmMonitorPath -InstallPath $InstallPath
+    if (-not $PSCmdlet.ShouldProcess($script:TaskName, 'Geplante Aufgabe starten')) { return }
+
+    $before = (Get-ScheduledTaskInfo -TaskName $script:TaskName -TaskPath $script:TaskPath).LastRunTime
+    $startedUtc = [datetime]::UtcNow.AddSeconds(-5)
+    Start-ScheduledTask -TaskName $script:TaskName -TaskPath $script:TaskPath
+
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $done = $false
+    $info = $null
+    while ($sw.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
+        Start-Sleep -Milliseconds 500
+        if ($OnWait) { & $OnWait }
+        $task = Get-ScheduledTask -TaskName $script:TaskName -TaskPath $script:TaskPath
+        $info = Get-ScheduledTaskInfo -TaskName $script:TaskName -TaskPath $script:TaskPath
+        if ([string]$task.State -ne 'Running' -and $info.LastRunTime -ne $before) { $done = $true; break }
+    }
+
+    $result = Read-DpmMonitorLastResult -Path $paths.ResultPath
+    if ($result -and $result.Time -lt $startedUtc) { $result = $null }
+    [pscustomobject]@{
+        Completed      = $done
+        LastTaskResult = if ($info) { $info.LastTaskResult } else { $null }
+        Result         = $result
     }
 }
 
@@ -1007,4 +1311,14 @@ Export-ModuleMember -Function @(
     'Save-DpmMonitorConfig'
     'Write-DpmMonitorLog'
     'Invoke-DpmMonitorCheck'
+    'Save-DpmMonitorLastResult'
+    'Read-DpmMonitorLastResult'
+    'Get-DpmMonitorVersion'
+    'Compare-DpmMonitorVersion'
+    'Get-DpmMonitorPath'
+    'Get-DpmMonitorInstallation'
+    'Get-DpmMonitorExecutionPolicyWarning'
+    'Install-DpmMonitor'
+    'Uninstall-DpmMonitor'
+    'Start-DpmMonitorTask'
 )

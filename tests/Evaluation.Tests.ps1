@@ -209,6 +209,7 @@ Describe 'Invoke-DpmMonitorEvaluation' {
             $x = @($e.Items | Where-Object Status -eq 'Excluded')
             $x.LogicalPath | Should -Be 'SRV-SQL01\db02'
             $x.Reason | Should -Be 'Ausgenommen: Datenbank wird abgelöst'
+            $x.LatestRecoveryPoint | Should -Be (U '2026-11-01 20:30')
             $e.Report | Should -BeLike '*Ausgenommen: 1 Datenquelle(n).*'
         }
         It 'matches names case-insensitively' {

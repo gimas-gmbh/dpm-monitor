@@ -12,6 +12,7 @@
 param(
     [string]$ConfigPath,
     [string]$LogPath,
+    [string]$ResultPath,
     [switch]$NoPing
 )
 
@@ -19,10 +20,11 @@ $ErrorActionPreference = 'Stop'
 # $PSScriptRoot is empty in param defaults under Windows PowerShell 5.1.
 if (-not $ConfigPath) { $ConfigPath = Join-Path $PSScriptRoot 'config.json' }
 if (-not $LogPath) { $LogPath = Join-Path $PSScriptRoot 'logs\dpm-monitor.log' }
+if (-not $ResultPath) { $ResultPath = Join-Path $PSScriptRoot 'last-result.json' }
 
 try {
     Import-Module (Join-Path $PSScriptRoot 'DpmMonitor.psm1') -Force
-    $result = Invoke-DpmMonitorCheck -ConfigPath $ConfigPath -LogPath $LogPath -NoPing:$NoPing
+    $result = Invoke-DpmMonitorCheck -ConfigPath $ConfigPath -LogPath $LogPath -ResultPath $ResultPath -NoPing:$NoPing
 }
 catch {
     # Last resort: the module itself could not be loaded.
