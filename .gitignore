@@ -3,6 +3,11 @@ DPM-Bestandsaufnahme_*/
 DPM-Bestandsaufnahme_*.zip
 *.zip
 
+# Runtime files if Check.ps1 is run from the source folder
+/src/config.json
+/src/last-result.json
+/src/logs/
+
 # Build and test output
 /dist/
 /out/
