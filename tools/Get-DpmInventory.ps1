@@ -311,55 +311,90 @@ try {
 
     # --- Recovery Points ------------------------------------------------
     if ($dsEntries.Count -gt 0) {
-        Invoke-Step "Recovery Points lesen (je Datenquelle die letzten $RecoveryPointsPerDatasource)" {
+        Invoke-Step "Recovery Points lesen (je Datenquelle und Speicherort die letzten $RecoveryPointsPerDatasource)" {
             $rows = New-Object System.Collections.Generic.List[object]
+            $summary = New-Object System.Collections.Generic.List[object]
             $columns = New-Object System.Collections.Generic.List[string]
-            $samples = @{}   # one sample recovery point per data source type
+            $samples = @{}   # one sample recovery point per type, source and storage location
+            $hasOnline = (Get-Command Get-DPMRecoveryPoint).Parameters.ContainsKey('Online')
             $n = 0
             foreach ($e in $dsEntries) {
                 $n++
                 Write-Progress -Activity 'Recovery Points lesen' -Status "$n / $($dsEntries.Count): $($e.DS.LogicalPath)" `
                     -PercentComplete ([int](100 * $n / $dsEntries.Count))
                 $typeName = Get-TypeName $e.DS.Type
-                try {
-                    $rps = @(Get-DPMRecoveryPoint -Datasource $e.DS |
-                        Sort-Object RepresentedPointInTime -Descending |
-                        Select-Object -First $RecoveryPointsPerDatasource)
-                    if (-not $samples.ContainsKey($typeName) -and $rps.Count -gt 0) { $samples[$typeName] = $rps[0] }
-                    foreach ($rp in $rps) {
-                        $time = $null
-                        if ($rp.RepresentedPointInTime) { $time = [datetime]$rp.RepresentedPointInTime }
-                        $dayOfWeek = $null
-                        if ($time) { $dayOfWeek = $time.DayOfWeek.ToString() }
-                        $row = [ordered]@{
-                            ProtectionGroup      = $e.PG
-                            ProductionServerName = $e.DS.ProductionServerName
-                            LogicalPath          = $e.DS.LogicalPath
-                            Type                 = $typeName
-                            Zeitpunkt            = Format-Time $time
-                            Wochentag            = $dayOfWeek
-                        }
-                        # All simple-valued recovery point properties (names are undocumented).
-                        foreach ($p in $rp.PSObject.Properties) {
-                            $v = $p.Value
-                            if ($null -eq $v -or $v -is [string] -or $v -is [ValueType]) {
-                                if ($v -is [datetime]) { $v = Format-Time $v }
-                                $row["RP_$($p.Name)"] = $v
-                            }
-                        }
-                        foreach ($k in $row.Keys) { if (-not $columns.Contains($k)) { $columns.Add($k) } }
-                        $rows.Add([pscustomobject]$row)
+                # Disk and tape points come from the default call; online (Azure) points need -Online.
+                $sources = @(@{ Name = 'Standard'; Block = { param($ds) Get-DPMRecoveryPoint -Datasource $ds } })
+                if ($hasOnline) { $sources += @{ Name = 'Online'; Block = { param($ds) Get-DPMRecoveryPoint -Datasource $ds -Online } } }
+                foreach ($source in $sources) {
+                    try {
+                        $all = @(& $source.Block $e.DS | Where-Object { $null -ne $_ })
                     }
-                }
-                catch {
-                    $msg = "Recovery Points fuer $($e.DS.LogicalPath): $($_.Exception.Message)"
-                    Write-Warning $msg
-                    $script:problems.Add($msg)
+                    catch {
+                        if ($source.Name -eq 'Standard') {
+                            $msg = "Recovery Points fuer $($e.DS.LogicalPath): $($_.Exception.Message)"
+                            Write-Warning $msg
+                            $script:problems.Add($msg)
+                        }
+                        continue
+                    }
+                    # Group by all simple properties that look like a storage location, so that
+                    # rare tape or online points are not pushed out by frequent disk points.
+                    $groups = $all | Group-Object {
+                        $rp = $_
+                        @($rp.PSObject.Properties | Where-Object {
+                                $_.Name -match 'Location|Tape|Online|Cloud|Disk|Media|Vault' -and
+                                ($null -eq $_.Value -or $_.Value -is [string] -or $_.Value -is [ValueType])
+                            } | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join '; '
+                    }
+                    foreach ($g in $groups) {
+                        $sorted = @($g.Group | Sort-Object RepresentedPointInTime -Descending)
+                        $summary.Add([pscustomobject][ordered]@{
+                                ProtectionGroup      = $e.PG
+                                ProductionServerName = $e.DS.ProductionServerName
+                                LogicalPath          = $e.DS.LogicalPath
+                                Type                 = $typeName
+                                Quelle               = $source.Name
+                                Speicherort          = $g.Name
+                                Anzahl               = $sorted.Count
+                                Neuester             = Format-Time $sorted[0].RepresentedPointInTime
+                                Aeltester            = Format-Time $sorted[-1].RepresentedPointInTime
+                            })
+                        $sampleKey = "$typeName | $($source.Name) | $($g.Name)"
+                        if (-not $samples.ContainsKey($sampleKey)) { $samples[$sampleKey] = $sorted[0] }
+                        foreach ($rp in ($sorted | Select-Object -First $RecoveryPointsPerDatasource)) {
+                            $time = $null
+                            if ($rp.RepresentedPointInTime) { $time = [datetime]$rp.RepresentedPointInTime }
+                            $dayOfWeek = $null
+                            if ($time) { $dayOfWeek = $time.DayOfWeek.ToString() }
+                            $row = [ordered]@{
+                                ProtectionGroup      = $e.PG
+                                ProductionServerName = $e.DS.ProductionServerName
+                                LogicalPath          = $e.DS.LogicalPath
+                                Type                 = $typeName
+                                Quelle               = $source.Name
+                                Speicherort          = $g.Name
+                                Zeitpunkt            = Format-Time $time
+                                Wochentag            = $dayOfWeek
+                            }
+                            # All simple-valued recovery point properties (names are undocumented).
+                            foreach ($p in $rp.PSObject.Properties) {
+                                $v = $p.Value
+                                if ($null -eq $v -or $v -is [string] -or $v -is [ValueType]) {
+                                    if ($v -is [datetime]) { $v = Format-Time $v }
+                                    $row["RP_$($p.Name)"] = $v
+                                }
+                            }
+                            foreach ($k in $row.Keys) { if (-not $columns.Contains($k)) { $columns.Add($k) } }
+                            $rows.Add([pscustomobject]$row)
+                        }
+                    }
                 }
             }
             Write-Progress -Activity 'Recovery Points lesen' -Completed
             # Same columns for every row, otherwise Export-Csv takes them from the first row only.
             Save-Csv '40_recoverypoints.csv' @($rows.ToArray() | Select-Object -Property $columns.ToArray())
+            Save-Csv '42_recoverypoints_uebersicht.csv' $summary.ToArray()
             if ($samples.Count -gt 0) {
                 Save-Text '41_recoverypoint_beispiele.txt' ($samples.Keys | Sort-Object | ForEach-Object {
                     "===== $_ ====="
@@ -370,9 +405,53 @@ try {
         }
     }
 
+    # --- Speicher -------------------------------------------------------
+    Invoke-Step 'Speicher lesen' {
+        $text = New-Object System.Collections.Generic.List[string]
+        $export = New-Object System.Collections.Generic.List[object]
+        $variants = @(
+            @{ Name = 'Volumes (Modern Backup Storage)'; Block = { Get-DPMDiskStorage -DPMServerName $env:COMPUTERNAME -Volumes } },
+            @{ Name = 'Datentraeger'; Block = { Get-DPMDiskStorage -DPMServerName $env:COMPUTERNAME } }
+        )
+        foreach ($v in $variants) {
+            $text.Add("===== $($v.Name) =====")
+            try {
+                $items = @(& $v.Block | Where-Object { $null -ne $_ })
+                $export.Add([pscustomobject]@{ Variante = $v.Name; Items = $items })
+                if ($items.Count -eq 0) { $text.Add('(leer)') }
+                else { $text.Add(($items | Format-List * | Out-String -Width 4096)) }
+            }
+            catch {
+                $text.Add("(nicht verfuegbar: $($_.Exception.Message))")
+            }
+        }
+        Save-Text '60_speicher.txt' $text.ToArray()
+        $export.ToArray() | Export-Clixml -Path (Join-Path $outDir '61_speicher.xml') -Depth 3
+        $first = $export.ToArray() | ForEach-Object { $_.Items } | Select-Object -First 1
+        if ($first) { Save-Text '62_speicher_member.txt' ($first | Get-Member) }
+    }
+
     # --- Aktuelle Alerts ------------------------------------------------
     Invoke-Step 'Aktuelle DPM-Alerts lesen' {
-        Save-Text '50_alerts.txt' (Get-DPMAlert -DPMServerName $env:COMPUTERNAME | Format-List *)
+        $alerts = @(Get-DPMAlert -DPMServerName $env:COMPUTERNAME | Where-Object { $null -ne $_ })
+        Save-Text '50_alerts.txt' ($alerts | Format-List *)
+        $alerts | Export-Clixml -Path (Join-Path $outDir '51_alerts.xml') -Depth 2
+        if ($alerts.Count -gt 0) { Save-Text '52_alert_member.txt' ($alerts[0] | Get-Member) }
+        # How long alerts stay open, per type and severity (relevant for alarm rules).
+        $now = Get-Date
+        Save-Csv '53_alerts_uebersicht.csv' @($alerts | ForEach-Object {
+                $since = $null
+                if ($_.OccurredSince) { $since = [datetime]$_.OccurredSince }
+                [pscustomobject][ordered]@{
+                    Type             = "$($_.Type)"
+                    Severity         = "$($_.Severity)"
+                    IsResolved       = $_.IsResolved
+                    TargetObjectType = "$($_.TargetObjectType)"
+                    AffectedArea     = "$($_.AffectedArea)"
+                    OccurredSince    = Format-Time $since
+                    OffenStunden     = if ($since) { [Math]::Round(($now - $since).TotalHours, 1) } else { $null }
+                }
+            })
     }
 }
 catch {
