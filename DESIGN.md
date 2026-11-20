@@ -61,7 +61,13 @@ der Dienst hängt oder die Prüfung selbst nicht mehr läuft.
 - WinForms-Ereignisse laufen im Scope des Aufrufers von `ShowDialog()`. Fenster daher in derselben Funktion
   aufbauen und anzeigen, sonst sehen die Handler deren Variablen nicht.
 - Dateien aus einer heruntergeladenen ZIP tragen die Internet-Zonenmarkierung; bei `RemoteSigned` per
-  Gruppenrichtlinie laufen sie erst nach `Unblock-File`.
+  Gruppenrichtlinie laufen sie erst nach `Unblock-File`. Ein Doppelklick auf eine markierte `.cmd` zeigt
+  die Windows-Sicherheitswarnung („Herausgeber konnte nicht verifiziert werden“); `Start-Process` wartet
+  dabei, bis jemand sie beantwortet.
+- Windows PowerShell ist nicht DPI-aware: auf 4K-Bildschirmen streckt Windows WinForms-Fenster als Bitmap,
+  die Schrift wird unscharf. Abhilfe: `SetProcessDPIAware()` vor dem ersten Fenster und Pixelmaße mit
+  dem DPI-Faktor skalieren (Schriften in Punkt skalieren selbst).
+- In der Windows Sandbox lässt sich `Microsoft.PowerShell.Archive` (`Expand-Archive`) nicht laden.
 - Windows PowerShell 5.1 macht Stderr nativer Programme bei `2>&1` zu Fehlerobjekten; mit
   `$ErrorActionPreference = 'Stop'` bricht das ab. Und `powershell.exe -File` ohne `exit` kann den
   `$LASTEXITCODE` eines Kindprozesses als eigenen Exit-Code liefern. Skripte enden daher mit explizitem `exit`.
@@ -174,3 +180,7 @@ Neue Weggabelungen und Abweichungen von Abschnitt 3 hier eintragen: Datum, Entsc
 | 2026-11-20 | Release über GitHub Actions: Tests und Testbuild bei jedem Push/PR auf `windows-latest` mit Windows PowerShell 5.1; bei Tag `v*` Paket bauen und Release mit ZIP und SHA-256 anlegen. Einzige Fremd-Action ist `actions/checkout`, per Commit-SHA gepinnt; das Release legt das vorinstallierte `gh` an. Version steht nur im Modul, der Tag muss passen | Öffentliches Repo, daher kostenlos; reproduzierbar und unabhängig vom Entwicklerrechner. Wenige, gepinnte Abhängigkeiten in der Lieferkette | Lokales Build-Skript allein; Release-Actions von Drittanbietern |
 | 2026-11-20 | ZIP-Einträge einzeln mit `/` anlegen | `ZipFile.CreateFromDirectory` in .NET Framework kann Backslashes schreiben, die das ZIP-Format nicht erlaubt | `Compress-Archive` (gleiches Problem in PowerShell 5.1) |
 | 2026-11-20 | Versionierung mit Nerdbank.GitVersioning (nbgv, als lokales dotnet-Tool gepinnt): `version.json` hält Major.Minor, die Git-Höhe liefert die dritte Stelle. Der Build stempelt Version und Commit in die `DpmMonitor.psm1` des Pakets, im Quelltext steht `0.0.0-dev`. Jeder CI-Lauf legt das Paket als Artefakt ab; Releases über `nbgv tag` und Tag-Push. Ersetzt „Version steht nur im Modul“ | Jeder Stand hat eine eindeutige, steigende Version, die die Update-Logik versteht; Testpakete für DPM-Server ohne Release. Kein manuelles Hochzählen, Commit im Bericht nachvollziehbar | Version von Hand im Modul pflegen |
+| 2026-11-20 | Produktname in der Oberfläche und im Startmenü „gimas DPM Monitor“, Icon `DpmMonitor.ico` (gimas-Logo) für Fenster und Verknüpfung. Repository, Installationsordner und Aufgabe heißen weiter `dpm-monitor`/`DpmMonitor`; der Bericht an Healthchecks.io beginnt weiter mit „DPM-Überwachung <Server>“ | Wunsch nach gimas-Branding in der Oberfläche; technische Namen bleiben stabil | – |
+| 2026-11-20 | Oberfläche DPI-aware (System-DPI) mit explizit skalierten Pixelmaßen | Scharf auf 4K-Bildschirmen; Per-Monitor-DPI bräuchte eine App-Konfiguration, die `powershell.exe` nicht hat | `AutoScaleMode` von WinForms (skaliert nicht alle Maße, z. B. Spaltenbreiten) |
+| 2026-11-20 | Ende-zu-Ende-Test in Windows Sandbox (`tools\Test-InSandbox.ps1`): Installation aus markiertem Paket, Aufgabe als SYSTEM gegen ein Fake-DPM-Modul, Update, Oberfläche, Deinstallation | Prüft, was Unit-Tests nicht können (Aufgabenplanung, Rechte, Zonenmarkierung, SYSTEM-Kontext, Netz) | Test auf dem Entwicklerrechner (verändert das System) |
+| 2026-11-20 | Windows-Sicherheitswarnung beim Start aus heruntergeladener ZIP vorerst nur dokumentieren | Kostenlos; Code-Signing würde Warnung und `AllSigned` lösen, kostet aber ein Zertifikat und Pflege – Entscheidung offen | Code-Signing |

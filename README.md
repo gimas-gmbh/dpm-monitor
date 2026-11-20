@@ -21,10 +21,12 @@ Details, Ziele und Entscheidungen: [DESIGN.md](DESIGN.md).
 1. In [Healthchecks.io](https://healthchecks.io) einen Check für den Server anlegen:
    Periode 4 Stunden, Grace Time 2 Stunden. Die Ping-URL kopieren.
 2. Das Paket (ZIP) auf den DPM-Server kopieren und entpacken.
-3. `Konfigurieren.cmd` doppelklicken und die Rechteerhöhung bestätigen.
+3. `Konfigurieren.cmd` doppelklicken und die Rechteerhöhung bestätigen. Stammt die ZIP aus dem Internet,
+   fragt Windows vorher nach („Herausgeber konnte nicht verifiziert werden“): „Ausführen“ wählen. Alternativ
+   vor dem Entpacken in den Eigenschaften der ZIP „Zulassen“ ankreuzen.
 4. Ping-URL eintragen, „Installieren“. Die erste Prüfung läuft sofort, das Ergebnis wird angezeigt.
 
-Danach öffnet sich die Oberfläche über das Startmenü („DPM-Überwachung“). Dort lassen sich Datenquellen
+Danach öffnet sich die Oberfläche über das Startmenü („gimas DPM Monitor“). Dort lassen sich Datenquellen
 ausnehmen (mit Grund, optional befristet), abweichende Rhythmen festlegen, die Prüfung sofort starten und
 dpm-monitor wieder entfernen. Für ein Update das neue Paket entpacken und dessen `Konfigurieren.cmd` starten;
 die Konfiguration bleibt erhalten.
