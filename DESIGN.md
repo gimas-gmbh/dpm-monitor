@@ -47,6 +47,12 @@ der Dienst hängt oder die Prüfung selbst nicht mehr läuft.
 - Eine per Gruppenrichtlinie erzwungene Execution Policy (z. B. `AllSigned`) sticht `-ExecutionPolicy Bypass`.
 - Windows PowerShell 5.1 liest `.ps1` ohne BOM als ANSI; Umlaute brechen.
 - Healthchecks.io: `/fail` mit Body wird im Dashboard angezeigt. Periode und Grace Time stellt man im Dashboard ein.
+- Windows PowerShell 5.1 wirft „Die Argumenttypen stimmen nicht überein“ bei `@($list)`, wenn `$list` eine
+  `List[object]` ist (auch leer). Listen mit `.ToArray()` übergeben oder Arrays verwenden.
+- DPM liefert viele Texte lokalisiert (`ObjectType`, `JobTypeString`, `ScheduleType`, `ScheduleDescription`,
+  Datumsformat). Logik nur auf Enums, Klassennamen und Zahlen stützen, nie auf diese Texte.
+- `OldestDiskRecoveryPoint` bleibt auch nach dem Nachladen `0001-01-01`, die Variante `…Time` ist gefüllt.
+  Auf `0001-01-01` nur bei den tatsächlich genutzten Feldern prüfen.
 
 ## 3. Ausgangshypothesen
 
@@ -63,6 +69,61 @@ Aktueller Plan. Jeder Punkt darf sich bei der Implementierung als falsch herauss
 - Rückfallebene: Stundenschwelle, global und pro Protection Group/Datenquelle überschreibbar,
   mit Voreinstellungen („täglich“, „werktags“, „wöchentlich“, „eigene“).
 - Optional im Fail-Body: kritische DPM-Alerts, freier Platz im Storage Pool.
+
+**Erkenntnisse aus den Bestandsaufnahmen** (2 Server, DPM 2019 und DPM 2022 auf Windows Server 2019,
+deutsche Oberfläche, 26 bzw. 139 Datenquellen, 2 bzw. 3 Schutzgruppen; Stand 2026-11)
+
+*Struktur von `Get-DPMPolicySchedule`*
+- `-ShortTerm` liefert je Schutzgruppe eine Liste von Objekten verschiedener Klassen:
+  - `ReplicationSchedule`: `Frequency` in Minuten (gesehen: 60, 240), `JobType` = `Replication`.
+    Fehlt bei Schutzgruppen, die nur vor einem Wiederherstellungspunkt synchronisieren.
+  - `ShadowCopySchedule`: `TimesOfDay` (Liste von `DateTime`), `WeekDays` (Liste), `SCOffset` (Minuten),
+    `JobType` = `ShadowCopy`. `TimesOfDay` enthält den Offset bereits (Beschreibung „18:00“, `TimesOfDay` 18:04,
+    `SCOffset` 4). Nur bei Schutzgruppen mit Dateidaten gesehen.
+  - `FullSchedule` (Schnelle vollständige Sicherung): `TimesOfDay`, `WeekDays`, `JobType` = `FullReplicationForApplication`.
+- In `TimesOfDay` zählt nur die Uhrzeit; das Datum ist der Abfragetag.
+- `WeekDays` ist eine Liste von Flags: So = 1, Mo = 2, Di = 4, Mi = 8, Do = 16, Fr = 32, Sa = 64
+  (live als Enum-Namen `Su`, `Mo`, …; nach CLIXML-Export als Zahlen). In beiden Aufnahmen sind alle Pläne täglich,
+  Werktags-Pläne kamen nicht vor.
+- `-OffsetSchedule` liefert nur eine Zahl (überall 0).
+- `-LongTerm Online` liefert `CloudBackupSchedule` (`TimesOfDay`, `WeekDays`, `Interval`, `Frequency`, `MonthDays`,
+  `RelativeIntervals`, `RelativeWeekDays`, `Months`), gesehen wöchentlich freitags.
+  `-LongTerm Tape` liefert `ArchiveSchedule` (`Frequency`, `Interval`, `WeekDay(s)`, `RelativeWeekDay`,
+  `RelativeInterval`, `ScheduleTime` mit Datum als Anker, `Generation`, `Vault`), gesehen monatlich am 1.
+
+*Welcher Zeitplan erzeugt die Wiederherstellungspunkte* (vorläufig, abgeleitet aus `LatestRecoveryPoint`;
+die Liste der einzelnen Punkte fehlte wegen eines Skriptfehlers und wird mit einem zweiten Lauf nachgeholt)
+- SQL: Jede Datenbank bekommt einen Punkt zur Schnellen vollständigen Sicherung. Ein Teil der Datenbanken
+  (vermutlich Wiederherstellungsmodell „vollständig“) bekommt zusätzlich bei jeder Synchronisation einen Punkt;
+  deren letzter Punkt lag genau auf dem Synchronisationsraster (stündlich bzw. alle 4 h).
+  Verlässlicher Takt für alle SQL-Datenbanken ist damit der `FullSchedule`.
+- Hyper-V: Punkt zur Schnellen vollständigen Sicherung.
+- Systemschutz (Bare Metal/Systemstatus): Punkt zur Schnellen vollständigen Sicherung, auch in einer Schutzgruppe,
+  die zusätzlich einen Schattenkopie-Zeitplan hat.
+- Volume (Dateidaten): Punkt zur Schattenkopie-Zeit.
+- Die Punkte einer Schutzgruppe entstehen nacheinander: bis ca. 60 min nach dem geplanten Start bei rund
+  70 Datenquellen. Der geplante Puffer von 3 h reicht dafür.
+- Bei allen Datenquellen war `LatestRecoveryPoint` = `LatestDiskRecoveryPoint`, auch mit Online- oder Bandsicherung.
+
+*Asynchrones Nachladen*
+- Das Warten auf `DataSourceChangedEvent` funktioniert: keine `0001-01-01` in `LatestRecoveryPoint` und
+  `OldestRecoveryPoint`, alle Events kamen nach 0,6 bzw. 1,1 s.
+
+*Netzwerk*
+- Beide Server: `SecurityProtocol` ab Werk `Tls, Tls11, Tls12` (nicht `SystemDefault`, TLS 1.2 vorhanden),
+  `https://hc-ping.com/` antwortet mit HTTP 200, WinHTTP-Proxy „direkt“. Es ist also keine TLS-Anpassung nötig.
+- Getestet wurde als Administrator. `Invoke-WebRequest` nutzt die Proxy-Einstellungen des Benutzers, nicht WinHTTP.
+  Ob es als SYSTEM klappt, zeigt erst der erste Lauf der geplanten Aufgabe.
+
+*Datenquellen-Zustände*
+- Klassenname in `Type` (z. B. `SQLObjectType`, `HyperVRctObjectType`, `HyperVObjectType` für die Host-Komponente,
+  `FsObjectType`, `SystemProtectionObjectType`) ist sprachunabhängig; `ObjectType` ist lokalisiert.
+- Ein Server hatte 13 SQL-Datenbanken mit `State` = `Invalid` und letztem Punkt vor Wochen bis Monaten,
+  alle mit `CurrentProtectionState` = `Protected`. Die erste Prüfung nach der Installation wird bei solchen
+  Servern sofort Alarm schlagen. Die Oberfläche muss diese Datenquellen bei der Einrichtung deutlich zeigen
+  und Ausnahmen anbieten.
+- `CurrentlyProtected` = `False` (`CurrentProtectionState` = `UserInputPending`) kam bei Datenquellen mit
+  aktuellen Punkten vor. Dieses Feld taugt nicht, um Datenquellen von der Prüfung auszunehmen.
 
 **Installation und Betrieb**
 - Installationsort `C:\Program Files\DpmMonitor\`, geplante Aufgabe als SYSTEM alle 4 h.
@@ -83,3 +144,7 @@ Neue Weggabelungen und Abweichungen von Abschnitt 3 hier eintragen: Datum, Entsc
 | Datum | Entscheidung | Begründung | Alternativen |
 |---|---|---|---|
 | 2026-11 | Ein Healthchecks-Check pro Server über UUID-URL | Kein geteiltes Geheimnis über Kunden hinweg | Ping-Key + Slug mit Auto-Provisioning |
+| 2026-11-20 | Schutz vor Leaks durch eine Regel in AGENTS.md: vor jeder Veröffentlichung prüft ein günstiger Subagent | Wenig Aufwand, keine Einrichtung pro Rechner | Git-Hooks mit lokaler Sperrliste (zu viel Aufwand) |
+| 2026-11-20 | Keine Lizenzdatei | Repo ist öffentlich aus praktischen Gründen, kein klassisches OSS-Projekt | MIT, proprietärer Lizenztext |
+| 2026-11-20 | Datenquellentyp über den Klassennamen in `Type`, nicht über `ObjectType` | `ObjectType` ist lokalisiert | Texte je Sprache abgleichen |
+| 2026-11-20 | Erwarteter Takt (vorläufig): `FullSchedule` für SQL, Hyper-V und Systemschutz; `ShadowCopySchedule` für Dateidaten; Synchronisation zählt nicht als Takt | Sync-Punkte entstehen nur für einen Teil der SQL-Datenbanken; bestätigen mit der Liste der Punkte aus dem zweiten Lauf | Kürzesten Plan der Schutzgruppe nehmen (würde bei SQL im einfachen Modell falsch alarmieren) |
