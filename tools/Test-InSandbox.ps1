@@ -7,13 +7,16 @@
     Builds the current package (nbgv) and a newer one for the update test,
     starts Windows Sandbox with tools\sandbox\Run-SandboxTest.ps1 and waits
     for its results (results.json, steps.log, screenshots) in -WorkDir.
-    The sandbox has network access; the check pings hc-ping.com with an
-    all-zero UUID, which Healthchecks.io rejects.
+    The sandbox has network access. Without -PingUrl the check pings
+    hc-ping.com with an all-zero UUID, which Healthchecks.io rejects. With
+    -PingUrl (a test check, never a customer's) it reports there for real;
+    the URL is passed through the work folder only, never stored in the repo.
 #>
 [CmdletBinding()]
 param(
     [string]$WorkDir = (Join-Path $env:TEMP 'dpm-monitor-sandbox'),
-    [int]$TimeoutMinutes = 20
+    [int]$TimeoutMinutes = 20,
+    [string]$PingUrl
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,6 +44,7 @@ Get-ChildItem -LiteralPath $inDir -Filter '*.sha256' | Remove-Item
 
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'sandbox\Run-SandboxTest.ps1') -Destination $inDir
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'sandbox\DataProtectionManager') -Destination $inDir -Recurse
+if ($PingUrl) { Set-Content -LiteralPath (Join-Path $inDir 'pingurl.txt') -Value $PingUrl -Encoding ASCII }
 
 $wsb = Join-Path $WorkDir 'dpm-monitor-test.wsb'
 $config = @"

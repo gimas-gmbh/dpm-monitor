@@ -113,7 +113,9 @@ try {
     Invoke-Step 'Installieren' {
         Import-Module (Join-Path $pkg 'DpmMonitor.psm1') -Force
         $config = Get-DpmMonitorDefaultConfig
-        $config.PingUrl = 'https://hc-ping.com/00000000-0000-0000-0000-000000000000'
+        $urlFile = Join-Path $in 'pingurl.txt'
+        $config.PingUrl = if (Test-Path -LiteralPath $urlFile) { (Get-Content -LiteralPath $urlFile -TotalCount 1).Trim() }
+        else { 'https://hc-ping.com/00000000-0000-0000-0000-000000000000' }
         $inst = Install-DpmMonitor -SourcePath $pkg -Config $config -Confirm:$false
         "Version $($inst.Version), Aufgabe $($inst.TaskState)"
     }
