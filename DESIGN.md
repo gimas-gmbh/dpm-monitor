@@ -53,6 +53,8 @@ der Dienst hängt oder die Prüfung selbst nicht mehr läuft.
   Datumsformat). Logik nur auf Enums, Klassennamen und Zahlen stützen, nie auf diese Texte.
 - `OldestDiskRecoveryPoint` bleibt auch nach dem Nachladen `0001-01-01`, die Variante `…Time` ist gefüllt.
   Auf `0001-01-01` nur bei den tatsächlich genutzten Feldern prüfen.
+- In Windows PowerShell 5.1 ist `$PSScriptRoot` in Standardwerten des `param()`-Blocks leer.
+  Pfade relativ zum Skript erst im Skriptrumpf bilden.
 
 ## 3. Ausgangshypothesen
 
@@ -148,3 +150,10 @@ Neue Weggabelungen und Abweichungen von Abschnitt 3 hier eintragen: Datum, Entsc
 | 2026-11-20 | Keine Lizenzdatei | Repo ist öffentlich aus praktischen Gründen, kein klassisches OSS-Projekt | MIT, proprietärer Lizenztext |
 | 2026-11-20 | Datenquellentyp über den Klassennamen in `Type`, nicht über `ObjectType` | `ObjectType` ist lokalisiert | Texte je Sprache abgleichen |
 | 2026-11-20 | Erwarteter Takt (vorläufig): `FullSchedule` für SQL, Hyper-V und Systemschutz; `ShadowCopySchedule` für Dateidaten; Synchronisation zählt nicht als Takt | Sync-Punkte entstehen nur für einen Teil der SQL-Datenbanken; bestätigen mit der Liste der Punkte aus dem zweiten Lauf | Kürzesten Plan der Schutzgruppe nehmen (würde bei SQL im einfachen Modell falsch alarmieren) |
+| 2026-11-20 | Verpasste Termine = geplante Termine nach (letzter Punkt + 15 min) bis (jetzt − Puffer). Ab N Terminen „Fehler“, darunter „Warnung“ im Bericht, aber Erfolgsmeldung | Zählt in Ortszeit, damit Zeitumstellung, Wochenenden und Werktags-Pläne ohne Sonderfälle stimmen. Die 15 min decken Punkte, die vor der geplanten Zeit gestempelt sind (Schattenkopie 18:04, Punkt 18:00) | Alter in Stunden gegen Intervall (bricht bei Werktags-Plänen und Zeitumstellung) |
+| 2026-11-20 | Termine in der Lücke der Sommerzeit-Umstellung zählen eine Stunde später, Termine in der doppelten Stunde einmal | Deterministisch; das genaue DPM-Verhalten ist unbekannt und für N = 2 unerheblich | Termin auslassen |
+| 2026-11-20 | Ohne Wiederherstellungspunkt oder ohne ermittelbaren Zeitplan: Fehler. `FallbackMaxAgeHours` greift nur, wenn er gesetzt ist (Standard: leer) | „Unbekannt ist nicht ok“ | Standard-Stundenschwelle (würde fehlende Zeitpläne verdecken) |
+| 2026-11-20 | Abweichende Regeln: pro Schutzgruppe oder Datenquelle entweder `MaxAgeHours` oder eigene Wochentage/Uhrzeiten; Datenquellen-Regel schlägt Schutzgruppen-Regel. Die Voreinstellungen der Oberfläche („täglich“, „werktags“, „wöchentlich“) werden auf Wochentage/Uhrzeiten abgebildet | Ein Modell für alle Fälle; „werktags“ ist mit einer Stundenschwelle nicht darstellbar | Getrennte Felder je Voreinstellung |
+| 2026-11-20 | Ausnahmen gelten bis einschließlich `Until` (Ortszeit). Abgelaufene oder ins Leere zeigende Ausnahmen und Regeln erscheinen als Hinweis im Bericht, ohne Fehler auszulösen | Admin sieht, was wieder überwacht wird, ohne Fehlalarm | Abgelaufene Ausnahmen als Fehler |
+| 2026-11-20 | Prüfung liefert Exit-Codes 0 ok, 1 Sicherung/Prüfung fehlgeschlagen, 2 Konfiguration unbrauchbar (kein Ping möglich), 3 Ping nicht zugestellt | Geplante Aufgabe und „Jetzt prüfen“ können den Fall unterscheiden; Healthchecks.io alarmiert in 2 und 3 über das Ausbleiben | Nur 0/1 |
+| 2026-11-20 | Layout `src/` (Modul, Prüfskript), `tests/` (Pester 5, synthetische Fixtures, DPM-Cmdlets als Stubs gemockt), `tools/` (Bestandsaufnahme, Testlauf, Kodierung). PSScriptAnalyzer prüft `src/` und `tools/` | Tests mit Pester-Scopes erzeugen Fehlalarme im Analyzer | Analyzer auch für Tests mit vielen Unterdrückungen |

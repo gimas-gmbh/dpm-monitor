@@ -30,6 +30,15 @@ Die ZIP enthält Server-, Domänen- und Datenquellennamen des Kunden. Sie gehör
 ## Entwicklung
 
 - Zielplattform: Windows PowerShell 5.1 auf dem DPM-Server.
-- Tests mit [Pester](https://pester.dev), statische Analyse mit PSScriptAnalyzer (nur für die Entwicklung nötig).
-- Dateien UTF-8 mit BOM, CRLF (siehe `.gitattributes`).
+- `src/DpmMonitor.psm1` enthält die Logik, `src/Check.ps1` ist das Prüfskript für die geplante Aufgabe.
+- Tests mit [Pester](https://pester.dev) 5, statische Analyse mit PSScriptAnalyzer (nur für die Entwicklung nötig):
+
+  ```powershell
+  Install-Module Pester -MinimumVersion 5.5.0 -Scope CurrentUser -SkipPublisherCheck
+  Install-Module PSScriptAnalyzer -Scope CurrentUser
+  powershell.exe -NoProfile -File tools\Invoke-Tests.ps1
+  ```
+
+- Dateien UTF-8 mit BOM, CRLF (siehe `.gitattributes`). `tools\Format-SourceFiles.ps1` korrigiert das,
+  ein Test prüft es.
 - Hinweise für Mitwirkende und Agents: [AGENTS.md](AGENTS.md).
