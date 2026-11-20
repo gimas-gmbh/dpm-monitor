@@ -33,6 +33,16 @@ die Konfiguration bleibt erhalten.
 
 Installiert wird nach `C:\Program Files\DpmMonitor\`, geprüft wird per geplanter Aufgabe als SYSTEM alle 4 Stunden.
 
+## Oberfläche
+
+Alle Namen in den Bildern sind erfunden.
+
+| Installation | Datenquellen |
+|---|---|
+| ![Installationsdialog mit Ping-URL und Proxy](docs/screenshots/installation.png) | ![Liste der Datenquellen mit Status, letztem Wiederherstellungspunkt und Hinweis](docs/screenshots/datenquellen.png) |
+| **Ausnahme festlegen** | **Eigenen Rhythmus festlegen** |
+| ![Dialog für eine Ausnahme mit Grund und Ablaufdatum](docs/screenshots/ausnahme.png) | ![Dialog für einen abweichenden Rhythmus](docs/screenshots/rhythmus.png) |
+
 ## Bestandsaufnahme
 
 [`tools/Get-DpmInventory.ps1`](tools/Get-DpmInventory.ps1) liest Schutzgruppen, Datenquellen, Zeitpläne,
