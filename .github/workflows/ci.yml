@@ -12,15 +12,19 @@ permissions:
 
 jobs:
   test:
-    name: Tests und Testbuild
+    name: Tests und Paket
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # nbgv computes the version from the git history
 
-      - name: Pester und PSScriptAnalyzer installieren
+      - name: Werkzeuge installieren
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+          dotnet tool restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Install-PackageProvider NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force | Out-Null
           Install-Module Pester -RequiredVersion 5.9.1 -Scope CurrentUser -Force -SkipPublisherCheck -Repository PSGallery
           Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force -Repository PSGallery
@@ -33,6 +37,13 @@ jobs:
         shell: powershell
         run: .\tools\Build-Release.ps1 -OutDir dist
 
+      - name: Paket als Artefakt ablegen
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dpm-monitor
+          path: dist/*.zip*
+          if-no-files-found: error
+
   release:
     name: Release
     if: startsWith(github.ref, 'refs/tags/v')
@@ -42,10 +53,16 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Paket bauen
         shell: powershell
-        run: .\tools\Build-Release.ps1 -OutDir dist -Tag $env:GITHUB_REF_NAME
+        run: |
+          $ErrorActionPreference = 'Stop'
+          dotnet tool restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\tools\Build-Release.ps1 -OutDir dist -Tag $env:GITHUB_REF_NAME
 
       - name: GitHub-Release anlegen
         shell: powershell
