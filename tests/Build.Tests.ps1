@@ -23,7 +23,7 @@ Describe 'Build-Release.ps1' {
         try { $names = @($archive.Entries | ForEach-Object { $_.FullName }) }
         finally { $archive.Dispose() }
         $prefix = "dpm-monitor-$version/"
-        ($names | Sort-Object) | Should -Be (@('Check.ps1', 'Configure.ps1', 'DpmMonitor.psm1', 'Konfigurieren.cmd', 'LIESMICH.txt') | ForEach-Object { "$prefix$_" })
+        ($names | Sort-Object) | Should -Be (@('Check.ps1', 'Configure.ps1', 'DpmMonitor.psm1', 'Konfigurieren.cmd', 'README.txt') | ForEach-Object { "$prefix$_" })
     }
     It 'writes a matching SHA-256 file' {
         $line = Get-Content -LiteralPath "$zip.sha256" -Raw

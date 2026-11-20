@@ -56,7 +56,7 @@ Danach ist die Oberfläche über das Startmenü erreichbar
 
 Weitere Informationen: https://github.com/gimas-gmbh/dpm-monitor
 "@
-[IO.File]::WriteAllText((Join-Path $staging 'LIESMICH.txt'), ($readme -replace "`r?`n", "`r`n"), (New-Object Text.UTF8Encoding($true)))
+[IO.File]::WriteAllText((Join-Path $staging 'README.txt'), ($readme -replace "`r?`n", "`r`n"), (New-Object Text.UTF8Encoding($true)))
 
 # Entries are written one by one: ZipFile.CreateFromDirectory in .NET Framework
 # may store backslashes, which the ZIP format does not allow.
