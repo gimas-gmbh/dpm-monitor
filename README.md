@@ -56,6 +56,18 @@ Die ZIP enthält Server-, Domänen- und Datenquellennamen des Kunden. Sie gehör
   powershell.exe -NoProfile -File tools\Invoke-Tests.ps1
   ```
 
-- Dateien UTF-8 mit BOM, CRLF (siehe `.gitattributes`). `tools\Format-SourceFiles.ps1` korrigiert das,
-  ein Test prüft es.
+- PowerShell-Dateien UTF-8 mit BOM, `.cmd` ASCII, alles CRLF (siehe `.gitattributes`).
+  `tools\Format-SourceFiles.ps1` korrigiert das, ein Test prüft es.
 - Hinweise für Mitwirkende und Agents: [AGENTS.md](AGENTS.md).
+
+## Release
+
+GitHub Actions führt bei jedem Push und Pull Request die Tests unter Windows PowerShell 5.1 aus und baut
+probeweise das Paket. Ein Release entsteht aus einem Tag:
+
+1. Version in `src/DpmMonitor.psm1` (`$script:ModuleVersion`) erhöhen und committen.
+2. Tag `v<Version>` setzen und pushen, z. B. `git tag v0.2.0` und `git push origin v0.2.0`.
+3. Die Action baut `dpm-monitor-<Version>.zip` samt SHA-256-Datei und legt das GitHub-Release an.
+   Passt der Tag nicht zur Version im Modul, bricht sie ab.
+
+Lokal baut `tools\Build-Release.ps1 -OutDir dist` dasselbe Paket.

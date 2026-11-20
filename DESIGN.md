@@ -62,6 +62,9 @@ der Dienst hängt oder die Prüfung selbst nicht mehr läuft.
   aufbauen und anzeigen, sonst sehen die Handler deren Variablen nicht.
 - Dateien aus einer heruntergeladenen ZIP tragen die Internet-Zonenmarkierung; bei `RemoteSigned` per
   Gruppenrichtlinie laufen sie erst nach `Unblock-File`.
+- Windows PowerShell 5.1 macht Stderr nativer Programme bei `2>&1` zu Fehlerobjekten; mit
+  `$ErrorActionPreference = 'Stop'` bricht das ab. Und `powershell.exe -File` ohne `exit` kann den
+  `$LASTEXITCODE` eines Kindprozesses als eigenen Exit-Code liefern. Skripte enden daher mit explizitem `exit`.
 
 ## 3. Ausgangshypothesen
 
@@ -168,3 +171,5 @@ Neue Weggabelungen und Abweichungen von Abschnitt 3 hier eintragen: Datum, Entsc
 | 2026-11-20 | `config.json` nur für Administratoren und SYSTEM lesbar | Wer die Ping-URL kennt, kann für den Server „ok“ melden | Standardrechte von Program Files (für alle Benutzer lesbar) |
 | 2026-11-20 | Geplante Aufgabe: erster Start zur nächsten vollen Stunde, dann alle 4 h; verpasste Starts nachholen, höchstens 1 h Laufzeit, keine parallelen Läufe | Wiederanlauf nach Neustart, keine hängenden Läufe | Start beim Systemstart zusätzlich |
 | 2026-11-20 | Update über dasselbe Paket: neuere Version ersetzt die Skripte und behält `config.json`; gleiche Version nur nach Rückfrage, ältere nie. Deinstallation entfernt Aufgabe, Verknüpfung, Skripte, Konfiguration und Protokoll, fremde Dateien bleiben | Ein Ablauf für Neuinstallation und Update | Getrenntes Update-Skript |
+| 2026-11-20 | Release über GitHub Actions: Tests und Testbuild bei jedem Push/PR auf `windows-latest` mit Windows PowerShell 5.1; bei Tag `v*` Paket bauen und Release mit ZIP und SHA-256 anlegen. Einzige Fremd-Action ist `actions/checkout`, per Commit-SHA gepinnt; das Release legt das vorinstallierte `gh` an. Version steht nur im Modul, der Tag muss passen | Öffentliches Repo, daher kostenlos; reproduzierbar und unabhängig vom Entwicklerrechner. Wenige, gepinnte Abhängigkeiten in der Lieferkette | Lokales Build-Skript allein; Release-Actions von Drittanbietern |
+| 2026-11-20 | ZIP-Einträge einzeln mit `/` anlegen | `ZipFile.CreateFromDirectory` in .NET Framework kann Backslashes schreiben, die das ZIP-Format nicht erlaubt | `Compress-Archive` (gleiches Problem in PowerShell 5.1) |
