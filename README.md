@@ -47,7 +47,8 @@ Alle Namen in den Bildern sind erfunden.
 ## Bestandsaufnahme
 
 [`tools/Get-DpmInventory.ps1`](tools/Get-DpmInventory.ps1) liest Schutzgruppen, Datenquellen, Zeitpläne,
-Wiederherstellungspunkte, Alerts sowie Proxy- und TLS-Einstellungen eines DPM-Servers aus. Es ändert nichts.
+Wiederherstellungspunkte (getrennt nach Disk, Band und online), Speicher, Alerts sowie Proxy- und TLS-Einstellungen
+eines DPM-Servers aus. Es ändert nichts.
 
 1. Skript auf den DPM-Server kopieren.
 2. Rechtsklick → „Mit PowerShell ausführen“. Das Skript fordert bei Bedarf Administratorrechte an.
