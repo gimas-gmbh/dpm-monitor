@@ -10,6 +10,8 @@
 
     Die Ausgabe enthaelt Server- und Datenquellennamen des Kunden, aber keine Kennwoerter.
 #>
+# AsyncTimeoutSeconds is used inside an Invoke-Step script block.
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'AsyncTimeoutSeconds')]
 [CmdletBinding()]
 param(
     # Wie viele der juengsten Recovery Points pro Datenquelle erfasst werden
@@ -95,7 +97,7 @@ function Invoke-Step {
 
 # DPM laedt LatestRecoveryPoint & Co. asynchron nach. Bis das passiert ist,
 # steht dort 0001-01-01. Wir loesen das Nachladen aus und warten auf die Events.
-function Wait-DatasourceProperties {
+function Wait-DatasourceProperty {
     param($Datasources, [int]$TimeoutSeconds)
 
     $registered = 0
@@ -105,7 +107,7 @@ function Wait-DatasourceProperties {
             Register-ObjectEvent -InputObject $ds -EventName DataSourceChangedEvent -SourceIdentifier "DpmInv$i" | Out-Null
             $registered++
         }
-        catch { }
+        catch { Write-Verbose "Event-Registrierung fehlgeschlagen: $($_.Exception.Message)" }
         $i++
     }
 
@@ -208,7 +210,7 @@ try {
 
     # --- DPM-Modul -------------------------------------------------------
     if (-not (Get-Command Get-DPMProtectionGroup -ErrorAction SilentlyContinue)) {
-        try { Import-Module DataProtectionManager -ErrorAction Stop } catch { }
+        try { Import-Module DataProtectionManager -ErrorAction Stop } catch { Write-Verbose $_.Exception.Message }
     }
     if (-not (Get-Command Get-DPMProtectionGroup -ErrorAction SilentlyContinue)) {
         $msg = 'DPM-PowerShell-Modul nicht gefunden. Ist das wirklich ein DPM-Server?'
@@ -241,7 +243,7 @@ try {
 
     if ($dsEntries.Count -gt 0) {
         Invoke-Step 'Auf asynchrone DPM-Daten warten' {
-            $w = Wait-DatasourceProperties -Datasources @($dsEntries | ForEach-Object { $_.DS }) -TimeoutSeconds $AsyncTimeoutSeconds
+            $w = Wait-DatasourceProperty -Datasources @($dsEntries | ForEach-Object { $_.DS }) -TimeoutSeconds $AsyncTimeoutSeconds
             Write-Host "   Events registriert: $($w.EventsRegistered), empfangen: $($w.EventsReceived), gewartet: $($w.WaitedSeconds) s"
         }
 
@@ -383,7 +385,7 @@ finally {
         Save-Text '99_probleme.txt' $script:problems
     }
 
-    try { Stop-Transcript | Out-Null } catch { }
+    try { Stop-Transcript | Out-Null } catch { Write-Verbose $_.Exception.Message }
 
     $zipOk = $false
     try {
