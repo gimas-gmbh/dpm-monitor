@@ -62,12 +62,19 @@ Die ZIP enthält Server-, Domänen- und Datenquellennamen des Kunden. Sie gehör
 
 ## Release
 
-GitHub Actions führt bei jedem Push und Pull Request die Tests unter Windows PowerShell 5.1 aus und baut
-probeweise das Paket. Ein Release entsteht aus einem Tag:
+Die Version berechnet [Nerdbank.GitVersioning](https://github.com/dotnet/Nerdbank.GitVersioning) (nbgv):
+Major und Minor stehen in `version.json`, die dritte Stelle zählt die Commits seit der letzten Änderung dort.
+Im Quelltext steht nur ein Platzhalter (`0.0.0-dev`); der Build schreibt Version und Commit in das Paket.
 
-1. Version in `src/DpmMonitor.psm1` (`$script:ModuleVersion`) erhöhen und committen.
-2. Tag `v<Version>` setzen und pushen, z. B. `git tag v0.2.0` und `git push origin v0.2.0`.
+GitHub Actions führt bei jedem Push und Pull Request die Tests unter Windows PowerShell 5.1 aus, baut das Paket
+und legt es als Artefakt „dpm-monitor“ am Lauf ab. So hat jeder Stand ein installierbares Testpaket mit eigener,
+steigender Version. Ein Release entsteht aus einem Tag:
+
+1. Auf dem gewünschten Commit von `master`: `dotnet tool run nbgv tag` (legt z. B. `v0.1.14` an).
+2. Tag pushen, z. B. `git push origin v0.1.14`.
 3. Die Action baut `dpm-monitor-<Version>.zip` samt SHA-256-Datei und legt das GitHub-Release an.
-   Passt der Tag nicht zur Version im Modul, bricht sie ab.
+   Passt der Tag nicht zur berechneten Version, bricht sie ab.
 
-Lokal baut `tools\Build-Release.ps1 -OutDir dist` dasselbe Paket.
+Für eine neue Minor- oder Major-Version `version` in `version.json` anheben.
+
+Lokal: einmal `dotnet tool restore`, dann baut `tools\Build-Release.ps1 -OutDir dist` dasselbe Paket.

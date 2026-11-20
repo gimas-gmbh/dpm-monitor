@@ -25,6 +25,8 @@ Veröffentlichung entfernt; solange nicht gepusht ist, auch aus der History.
 - PowerShell-Dateien UTF-8 mit BOM, `.cmd` reines ASCII ohne BOM, alles CRLF. Nach dem Bearbeiten
   `tools\Format-SourceFiles.ps1` laufen lassen; ein Test prüft es.
 - Tests: `powershell.exe -NoProfile -File tools\Invoke-Tests.ps1` (Pester 5 und PSScriptAnalyzer).
+- Version: nbgv (`version.json`, `dotnet tool restore`). `$script:ModuleVersion` im Quelltext bleibt `0.0.0-dev`,
+  der Build stempelt die echte Version ins Paket.
 - Fallstricke von PowerShell 5.1, DPM und WinForms stehen in DESIGN.md, Abschnitt 2.
 - Oberfläche und Meldungen auf Deutsch, Code und Bezeichner auf Englisch.
 - Kleine, nachvollziehbare Commits.
