@@ -16,6 +16,21 @@ entwickelt von der gimas GmbH für die DPM-Server ihrer Kunden.
 
 Details, Ziele und Entscheidungen: [DESIGN.md](DESIGN.md).
 
+## Installation auf dem DPM-Server
+
+1. In [Healthchecks.io](https://healthchecks.io) einen Check für den Server anlegen:
+   Periode 4 Stunden, Grace Time 2 Stunden. Die Ping-URL kopieren.
+2. Das Paket (ZIP) auf den DPM-Server kopieren und entpacken.
+3. `Konfigurieren.cmd` doppelklicken und die Rechteerhöhung bestätigen.
+4. Ping-URL eintragen, „Installieren“. Die erste Prüfung läuft sofort, das Ergebnis wird angezeigt.
+
+Danach öffnet sich die Oberfläche über das Startmenü („DPM-Überwachung“). Dort lassen sich Datenquellen
+ausnehmen (mit Grund, optional befristet), abweichende Rhythmen festlegen, die Prüfung sofort starten und
+dpm-monitor wieder entfernen. Für ein Update das neue Paket entpacken und dessen `Konfigurieren.cmd` starten;
+die Konfiguration bleibt erhalten.
+
+Installiert wird nach `C:\Program Files\DpmMonitor\`, geprüft wird per geplanter Aufgabe als SYSTEM alle 4 Stunden.
+
 ## Bestandsaufnahme
 
 [`tools/Get-DpmInventory.ps1`](tools/Get-DpmInventory.ps1) liest Schutzgruppen, Datenquellen, Zeitpläne,
@@ -30,7 +45,9 @@ Die ZIP enthält Server-, Domänen- und Datenquellennamen des Kunden. Sie gehör
 ## Entwicklung
 
 - Zielplattform: Windows PowerShell 5.1 auf dem DPM-Server.
-- `src/DpmMonitor.psm1` enthält die Logik, `src/Check.ps1` ist das Prüfskript für die geplante Aufgabe.
+- `src/DpmMonitor.psm1` enthält die Logik, `src/Check.ps1` ist das Prüfskript für die geplante Aufgabe,
+  `src/Configure.ps1` die Oberfläche, `src/Konfigurieren.cmd` der Starter.
+- `tools\Save-ConfigurePreview.ps1 -OutDir <Ordner>` rendert die Oberfläche mit synthetischen Daten als PNG.
 - Tests mit [Pester](https://pester.dev) 5, statische Analyse mit PSScriptAnalyzer (nur für die Entwicklung nötig):
 
   ```powershell

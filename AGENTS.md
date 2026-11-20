@@ -22,6 +22,9 @@ Veröffentlichung entfernt; solange nicht gepusht ist, auch aus der History.
 ## Konventionen
 
 - Laufzeit: Windows PowerShell 5.1, keine Laufzeitabhängigkeiten. Pester und PSScriptAnalyzer nur für die Entwicklung.
-- Dateien UTF-8 mit BOM, CRLF (`.gitattributes`).
+- PowerShell-Dateien UTF-8 mit BOM, `.cmd` reines ASCII ohne BOM, alles CRLF. Nach dem Bearbeiten
+  `tools\Format-SourceFiles.ps1` laufen lassen; ein Test prüft es.
+- Tests: `powershell.exe -NoProfile -File tools\Invoke-Tests.ps1` (Pester 5 und PSScriptAnalyzer).
+- Fallstricke von PowerShell 5.1, DPM und WinForms stehen in DESIGN.md, Abschnitt 2.
 - Oberfläche und Meldungen auf Deutsch, Code und Bezeichner auf Englisch.
 - Kleine, nachvollziehbare Commits.

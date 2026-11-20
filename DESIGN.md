@@ -55,6 +55,13 @@ der Dienst hängt oder die Prüfung selbst nicht mehr läuft.
   Auf `0001-01-01` nur bei den tatsächlich genutzten Feldern prüfen.
 - In Windows PowerShell 5.1 ist `$PSScriptRoot` in Standardwerten des `param()`-Blocks leer.
   Pfade relativ zum Skript erst im Skriptrumpf bilden.
+- PowerShell behandelt typografische Anführungszeichen (`„` `“` `”`) wie `"`. In Zeichenketten mit `"…"`
+  brechen sie das Parsen; deutsche Anführungszeichen nur in `'…'` verwenden.
+- `cmd.exe` stolpert über ein BOM in der ersten Zeile. `.cmd`-Dateien bleiben reines ASCII ohne BOM.
+- WinForms-Ereignisse laufen im Scope des Aufrufers von `ShowDialog()`. Fenster daher in derselben Funktion
+  aufbauen und anzeigen, sonst sehen die Handler deren Variablen nicht.
+- Dateien aus einer heruntergeladenen ZIP tragen die Internet-Zonenmarkierung; bei `RemoteSigned` per
+  Gruppenrichtlinie laufen sie erst nach `Unblock-File`.
 
 ## 3. Ausgangshypothesen
 
@@ -157,3 +164,7 @@ Neue Weggabelungen und Abweichungen von Abschnitt 3 hier eintragen: Datum, Entsc
 | 2026-11-20 | Ausnahmen gelten bis einschließlich `Until` (Ortszeit). Abgelaufene oder ins Leere zeigende Ausnahmen und Regeln erscheinen als Hinweis im Bericht, ohne Fehler auszulösen | Admin sieht, was wieder überwacht wird, ohne Fehlalarm | Abgelaufene Ausnahmen als Fehler |
 | 2026-11-20 | Prüfung liefert Exit-Codes 0 ok, 1 Sicherung/Prüfung fehlgeschlagen, 2 Konfiguration unbrauchbar (kein Ping möglich), 3 Ping nicht zugestellt | Geplante Aufgabe und „Jetzt prüfen“ können den Fall unterscheiden; Healthchecks.io alarmiert in 2 und 3 über das Ausbleiben | Nur 0/1 |
 | 2026-11-20 | Layout `src/` (Modul, Prüfskript), `tests/` (Pester 5, synthetische Fixtures, DPM-Cmdlets als Stubs gemockt), `tools/` (Bestandsaufnahme, Testlauf, Kodierung). PSScriptAnalyzer prüft `src/` und `tools/` | Tests mit Pester-Scopes erzeugen Fehlalarme im Analyzer | Analyzer auch für Tests mit vielen Unterdrückungen |
+| 2026-11-20 | „Jetzt prüfen“ startet die geplante Aufgabe (SYSTEM, inklusive Ping) und zeigt deren Ergebnis aus `last-result.json`. Die Liste der Datenquellen in der Oberfläche bewertet dagegen im Admin-Kontext ohne Ping, auch mit ungespeicherten Änderungen | Nur der echte Lauf als SYSTEM beweist Proxy, TLS und Ausführungsrichtlinie (siehe Fakten). Die Vorschau gibt beim Konfigurieren sofort Rückmeldung | Prüfung im Admin-Kontext mit Ping |
+| 2026-11-20 | `config.json` nur für Administratoren und SYSTEM lesbar | Wer die Ping-URL kennt, kann für den Server „ok“ melden | Standardrechte von Program Files (für alle Benutzer lesbar) |
+| 2026-11-20 | Geplante Aufgabe: erster Start zur nächsten vollen Stunde, dann alle 4 h; verpasste Starts nachholen, höchstens 1 h Laufzeit, keine parallelen Läufe | Wiederanlauf nach Neustart, keine hängenden Läufe | Start beim Systemstart zusätzlich |
+| 2026-11-20 | Update über dasselbe Paket: neuere Version ersetzt die Skripte und behält `config.json`; gleiche Version nur nach Rückfrage, ältere nie. Deinstallation entfernt Aufgabe, Verknüpfung, Skripte, Konfiguration und Protokoll, fremde Dateien bleiben | Ein Ablauf für Neuinstallation und Update | Getrenntes Update-Skript |
