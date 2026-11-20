@@ -1,5 +1,5 @@
 ﻿<#
-    DPM-Bestandsaufnahme fuer die geplante Backup-Ueberwachung (DpmWatch)
+    DPM-Bestandsaufnahme fuer die Backup-Ueberwachung (dpm-monitor)
 
     Ausfuehren auf dem DPM-Server:
       Rechtsklick auf die Datei -> "Mit PowerShell ausfuehren"
@@ -52,10 +52,32 @@ function Save-Text {
     ($Content | Out-String -Width 4096) | Set-Content -Path $path -Encoding UTF8
 }
 
+# Pass arrays, not List[object]: in Windows PowerShell 5.1, @($list) on a
+# List[object] throws "Argument types do not match".
 function Save-Csv {
-    param([string]$Name, $Rows)
+    param([string]$Name, [object[]]$Rows)
     $path = Join-Path $outDir $Name
-    @($Rows) | Export-Csv -Path $path -NoTypeInformation -Delimiter ';' -Encoding UTF8
+    if (-not $Rows -or $Rows.Count -eq 0) {
+        Set-Content -Path $path -Value '(keine Daten)' -Encoding UTF8
+        return
+    }
+    $Rows | Export-Csv -Path $path -NoTypeInformation -Delimiter ';' -Encoding UTF8
+}
+
+# Unambiguous timestamps including UTC offset (DST!). Empty for null/0001-01-01.
+function Format-Time {
+    param($Value)
+    if ($null -eq $Value) { return '' }
+    try { $t = [datetime]$Value } catch { return "$Value" }
+    if ($t -eq [datetime]::MinValue) { return '0001-01-01' }
+    $t.ToString('yyyy-MM-ddTHH:mm:sszzz', [Globalization.CultureInfo]::InvariantCulture)
+}
+
+# Short class name of the DPM object type (language independent, unlike ObjectType).
+function Get-TypeName {
+    param($Value)
+    if ($null -eq $Value) { return '' }
+    ("$Value" -split '\.')[-1]
 }
 
 function Invoke-Step {
@@ -89,6 +111,7 @@ function Wait-DatasourceProperties {
 
     $Datasources | Select-Object LatestRecoveryPoint, OldestRecoveryPoint, TotalRecoveryPoints > $null
 
+    $received = 0
     $sw = [Diagnostics.Stopwatch]::StartNew()
     while ($sw.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
         $received = @(Get-Event -ErrorAction SilentlyContinue | Where-Object { $_.SourceIdentifier -like 'DpmInv*' }).Count
@@ -105,6 +128,7 @@ function Wait-DatasourceProperties {
 
     [pscustomobject]@{
         EventsRegistered = $registered
+        EventsReceived   = $received
         WaitedSeconds    = [Math]::Round($sw.Elapsed.TotalSeconds, 1)
     }
 }
@@ -166,6 +190,13 @@ try {
             catch { $r.Ergebnis = "Fehler: $($_.Exception.Message)" }
             [pscustomobject]$r
         }
+        $uri = [Uri]'https://hc-ping.com/'
+        $proxy = [Net.WebRequest]::DefaultWebProxy
+        $results.Add([pscustomobject]@{
+            Test       = 'Proxy (.NET, aktueller Benutzer)'
+            Protokolle = ''
+            Ergebnis   = if ($proxy -and -not $proxy.IsBypassed($uri)) { "$($proxy.GetProxy($uri))" } else { 'direkt' }
+        })
         $results.Add((& $test 'Standard-Protokolle'))
         $sp = [Net.ServicePointManager]::SecurityProtocol
         if ($sp -ne [Net.SecurityProtocolType]::SystemDefault -and -not ($sp -band [Net.SecurityProtocolType]::Tls12)) {
@@ -211,25 +242,31 @@ try {
     if ($dsEntries.Count -gt 0) {
         Invoke-Step 'Auf asynchrone DPM-Daten warten' {
             $w = Wait-DatasourceProperties -Datasources @($dsEntries | ForEach-Object { $_.DS }) -TimeoutSeconds $AsyncTimeoutSeconds
-            Write-Host "   Events registriert: $($w.EventsRegistered), gewartet: $($w.WaitedSeconds) s"
+            Write-Host "   Events registriert: $($w.EventsRegistered), empfangen: $($w.EventsReceived), gewartet: $($w.WaitedSeconds) s"
         }
 
         Invoke-Step 'Datenquellen speichern' {
             $rows = foreach ($e in $dsEntries) {
                 $ds = $e.DS
-                [pscustomobject]@{
-                    ProtectionGroup      = $e.PG
-                    ProductionServerName = $ds.ProductionServerName
-                    Name                 = $ds.Name
-                    LogicalPath          = $ds.LogicalPath
-                    ObjectType           = $ds.ObjectType
-                    CurrentlyProtected   = $ds.CurrentlyProtected
-                    LatestRecoveryPoint  = $ds.LatestRecoveryPoint
-                    OldestRecoveryPoint  = $ds.OldestRecoveryPoint
-                    TotalRecoveryPoints  = $ds.TotalRecoveryPoints
+                [pscustomobject][ordered]@{
+                    ProtectionGroup         = $e.PG
+                    ProductionServerName    = $ds.ProductionServerName
+                    Name                    = $ds.Name
+                    LogicalPath             = $ds.LogicalPath
+                    DatasourceId            = $ds.DatasourceId
+                    Type                    = Get-TypeName $ds.Type
+                    ObjectType              = $ds.ObjectType
+                    State                   = $ds.State
+                    CurrentProtectionState  = $ds.CurrentProtectionState
+                    CurrentlyProtected      = $ds.CurrentlyProtected
+                    LatestRecoveryPoint     = Format-Time $ds.LatestRecoveryPoint
+                    LatestDiskRecoveryPoint = Format-Time $ds.LatestDiskRecoveryPoint
+                    OldestRecoveryPoint     = Format-Time $ds.OldestRecoveryPoint
+                    TotalRecoveryPoints     = $ds.TotalRecoveryPoints
+                    TotalDiskRecoveryPoints = $ds.TotalDiskRecoveryPoints
                 }
             }
-            Save-Csv '20_datenquellen.csv' $rows
+            Save-Csv '20_datenquellen.csv' @($rows)
             Save-Text '21_datenquellen_alle_eigenschaften.txt' ($dsEntries | ForEach-Object {
                 "===== [$($_.PG)] $($_.DS.ProductionServerName) | $($_.DS.LogicalPath) ====="
                 $_.DS | Format-List * | Out-String -Width 4096
@@ -274,25 +311,42 @@ try {
     if ($dsEntries.Count -gt 0) {
         Invoke-Step "Recovery Points lesen (je Datenquelle die letzten $RecoveryPointsPerDatasource)" {
             $rows = New-Object System.Collections.Generic.List[object]
-            $sample = $null
+            $columns = New-Object System.Collections.Generic.List[string]
+            $samples = @{}   # one sample recovery point per data source type
             $n = 0
             foreach ($e in $dsEntries) {
                 $n++
                 Write-Progress -Activity 'Recovery Points lesen' -Status "$n / $($dsEntries.Count): $($e.DS.LogicalPath)" `
-                    -PercentComplete (100 * $n / $dsEntries.Count)
+                    -PercentComplete ([int](100 * $n / $dsEntries.Count))
+                $typeName = Get-TypeName $e.DS.Type
                 try {
                     $rps = @(Get-DPMRecoveryPoint -Datasource $e.DS |
                         Sort-Object RepresentedPointInTime -Descending |
                         Select-Object -First $RecoveryPointsPerDatasource)
-                    if (-not $sample -and $rps.Count -gt 0) { $sample = $rps[0] }
+                    if (-not $samples.ContainsKey($typeName) -and $rps.Count -gt 0) { $samples[$typeName] = $rps[0] }
                     foreach ($rp in $rps) {
-                        $rows.Add([pscustomobject]@{
-                            ProtectionGroup        = $e.PG
-                            ProductionServerName   = $e.DS.ProductionServerName
-                            LogicalPath            = $e.DS.LogicalPath
-                            RepresentedPointInTime = $rp.RepresentedPointInTime
-                            Wochentag              = if ($rp.RepresentedPointInTime) { ([datetime]$rp.RepresentedPointInTime).DayOfWeek } else { $null }
-                        })
+                        $time = $null
+                        if ($rp.RepresentedPointInTime) { $time = [datetime]$rp.RepresentedPointInTime }
+                        $dayOfWeek = $null
+                        if ($time) { $dayOfWeek = $time.DayOfWeek.ToString() }
+                        $row = [ordered]@{
+                            ProtectionGroup      = $e.PG
+                            ProductionServerName = $e.DS.ProductionServerName
+                            LogicalPath          = $e.DS.LogicalPath
+                            Type                 = $typeName
+                            Zeitpunkt            = Format-Time $time
+                            Wochentag            = $dayOfWeek
+                        }
+                        # All simple-valued recovery point properties (names are undocumented).
+                        foreach ($p in $rp.PSObject.Properties) {
+                            $v = $p.Value
+                            if ($null -eq $v -or $v -is [string] -or $v -is [ValueType]) {
+                                if ($v -is [datetime]) { $v = Format-Time $v }
+                                $row["RP_$($p.Name)"] = $v
+                            }
+                        }
+                        foreach ($k in $row.Keys) { if (-not $columns.Contains($k)) { $columns.Add($k) } }
+                        $rows.Add([pscustomobject]$row)
                     }
                 }
                 catch {
@@ -302,12 +356,14 @@ try {
                 }
             }
             Write-Progress -Activity 'Recovery Points lesen' -Completed
-            Save-Csv '40_recoverypoints.csv' $rows
-            if ($sample) {
-                Save-Text '41_recoverypoint_beispiel.txt' @(
-                    ($sample | Format-List * | Out-String -Width 4096),
-                    ($sample | Get-Member | Out-String -Width 4096)
-                )
+            # Same columns for every row, otherwise Export-Csv takes them from the first row only.
+            Save-Csv '40_recoverypoints.csv' @($rows.ToArray() | Select-Object -Property $columns.ToArray())
+            if ($samples.Count -gt 0) {
+                Save-Text '41_recoverypoint_beispiele.txt' ($samples.Keys | Sort-Object | ForEach-Object {
+                    "===== $_ ====="
+                    $samples[$_] | Format-List * | Out-String -Width 4096
+                    $samples[$_] | Get-Member | Out-String -Width 4096
+                })
             }
         }
     }
