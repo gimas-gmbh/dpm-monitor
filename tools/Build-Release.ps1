@@ -3,23 +3,44 @@
     .SYNOPSIS
     Builds the release package dpm-monitor-<version>.zip plus its SHA-256 file.
 
-    The version comes from $script:ModuleVersion in src\DpmMonitor.psm1.
+    The version comes from Nerdbank.GitVersioning (version.json plus git
+    height, via the local dotnet tool "nbgv") and is stamped, together with
+    the commit, into the packaged DpmMonitor.psm1. The sources keep the
+    placeholder. -Version/-Commit override nbgv (tests, offline builds).
     With -Tag (e.g. from CI) the tag must be "v<version>".
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$OutDir,
-    [string]$Tag
+    [string]$Tag,
+    [string]$Version,
+    [string]$Commit = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $src = Join-Path $root 'src'
-$module = Import-Module (Join-Path $src 'DpmMonitor.psm1') -Force -PassThru
-$version = Get-DpmMonitorVersion
-if ($Tag -and $Tag -ne "v$version") {
-    throw "Tag '$Tag' passt nicht zur Version im Modul ($version). Erwartet: v$version"
+
+if (-not $Version) {
+    # Native tools may write to stderr; with 'Stop' Windows PowerShell 5.1 would throw.
+    $ErrorActionPreference = 'Continue'
+    Push-Location -LiteralPath $root
+    try { $json = & dotnet tool run nbgv get-version --format json 2>$null }
+    finally { Pop-Location }
+    $ErrorActionPreference = 'Stop'
+    if ($LASTEXITCODE -ne 0 -or -not $json) { throw 'nbgv lieferte keine Version. Vorher "dotnet tool restore" ausführen.' }
+    $info = ($json -join "`n") | ConvertFrom-Json
+    $Version = $info.SimpleVersion
+    $Commit = $info.GitCommitIdShort
 }
+if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw "Ungültige Version: '$Version'" }
+if ($Commit -notmatch '^[0-9a-f]*$') { throw "Ungültiger Commit: '$Commit'" }
+if ($Tag -and $Tag -ne "v$Version") {
+    throw "Tag '$Tag' passt nicht zur berechneten Version ($Version). Erwartet: v$Version"
+}
+$version = $Version
+
+$module = Import-Module (Join-Path $src 'DpmMonitor.psm1') -Force -PassThru
 $files = & $module { $script:ProductFiles }
 
 $OutDir = [IO.Path]::GetFullPath($OutDir)
@@ -34,6 +55,17 @@ New-Item -ItemType Directory -Path $staging -Force | Out-Null
 foreach ($f in $files) {
     Copy-Item -LiteralPath (Join-Path $src $f) -Destination $staging
 }
+
+# Stamp version and commit into the packaged module (UTF-8 with BOM, CRLF kept).
+$modulePath = Join-Path $staging 'DpmMonitor.psm1'
+$text = [IO.File]::ReadAllText($modulePath)
+foreach ($pair in @(@('ModuleVersion', $version), @('ModuleCommit', $Commit))) {
+    $pattern = "(?m)^\`$script:$($pair[0]) = '[^']*'"
+    if ([regex]::Matches($text, $pattern).Count -ne 1) { throw "Platzhalter `$script:$($pair[0]) nicht genau einmal gefunden." }
+    # "$$" is a literal "$" in a .NET regex replacement.
+    $text = [regex]::Replace($text, $pattern, "`$`$script:$($pair[0]) = '$($pair[1])'")
+}
+[IO.File]::WriteAllText($modulePath, $text, (New-Object Text.UTF8Encoding($true)))
 
 $readme = @"
 dpm-monitor $version

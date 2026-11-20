@@ -13,7 +13,10 @@
     DPM server and are converted with an explicit time zone.
 #>
 
-$script:ModuleVersion = '0.1.0'
+# Placeholders: tools\Build-Release.ps1 stamps the version computed by
+# Nerdbank.GitVersioning (nbgv) and the commit into the released copy.
+$script:ModuleVersion = '0.0.0-dev'
+$script:ModuleCommit = ''
 
 # Recovery points can be stamped a few minutes before the scheduled time
 # (shadow copy schedule 18:04 vs. recovery point 18:00). An occurrence counts
@@ -601,7 +604,7 @@ function Format-DpmMonitorReport {
         $lines.Add("Ausgenommen: $($excluded.Count) Datenquelle(n).")
     }
     $lines.Add('')
-    $lines.Add("Geprüft: $(Format-DpmMonitorTime $Evaluation.EvaluatedAt $TimeZone) (dpm-monitor $script:ModuleVersion)")
+    $lines.Add("Geprüft: $(Format-DpmMonitorTime $Evaluation.EvaluatedAt $TimeZone) (dpm-monitor $(Get-DpmMonitorVersion -WithCommit))")
     $lines.ToArray() -join "`n"
 }
 
@@ -947,7 +950,7 @@ function Invoke-DpmMonitorCheck {
         [TimeZoneInfo]$TimeZone = [TimeZoneInfo]::Local
     )
 
-    Write-DpmMonitorLog -Path $LogPath -Message "Prüfung gestartet (dpm-monitor $script:ModuleVersion)."
+    Write-DpmMonitorLog -Path $LogPath -Message "Prüfung gestartet (dpm-monitor $(Get-DpmMonitorVersion -WithCommit))."
     try {
         $config = Read-DpmMonitorConfig -Path $ConfigPath
     }
@@ -1043,9 +1046,15 @@ $script:ProductFiles = @('DpmMonitor.psm1', 'Check.ps1', 'Configure.ps1', 'Konfi
 $script:ShortcutName = 'DPM-Überwachung.lnk'
 
 function Get-DpmMonitorVersion {
+    <#
+        .SYNOPSIS
+        The version of this copy; with -WithCommit e.g. "0.1.14 (b29e88c5e0)".
+    #>
     [CmdletBinding()]
-    param()
-    $script:ModuleVersion
+    [OutputType([string])]
+    param([switch]$WithCommit)
+    if ($WithCommit -and $script:ModuleCommit) { "$script:ModuleVersion ($script:ModuleCommit)" }
+    else { $script:ModuleVersion }
 }
 
 function Get-DpmMonitorPath {
