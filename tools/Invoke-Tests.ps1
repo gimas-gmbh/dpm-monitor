@@ -39,4 +39,7 @@ if (-not $SkipAnalyzer) {
     }
 }
 
+# Explicit exit code: otherwise powershell.exe -File may pass on the
+# $LASTEXITCODE of a child process started by a test.
 if ($failed) { exit 1 }
+exit 0
