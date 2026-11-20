@@ -47,6 +47,9 @@ der Dienst hängt oder die Prüfung selbst nicht mehr läuft.
 - Eine per Gruppenrichtlinie erzwungene Execution Policy (z. B. `AllSigned`) sticht `-ExecutionPolicy Bypass`.
 - Windows PowerShell 5.1 liest `.ps1` ohne BOM als ANSI; Umlaute brechen.
 - Healthchecks.io: `/fail` mit Body wird im Dashboard angezeigt. Periode und Grace Time stellt man im Dashboard ein.
+  Bestätigt (2026-11-20, Test-Check): Erfolg und `/fail` per POST liefern HTTP 200, auch aus der geplanten Aufgabe
+  als SYSTEM. Die Ereignisliste zeigt kurze Bodies direkt, längere nur als „N byte body“ (voller Text per Klick).
+  Eine unbekannte UUID beantwortet hc-ping.com mit HTTP 400.
 - Windows PowerShell 5.1 wirft „Die Argumenttypen stimmen nicht überein“ bei `@($list)`, wenn `$list` eine
   `List[object]` ist (auch leer). Listen mit `.ToArray()` übergeben oder Arrays verwenden.
 - DPM liefert viele Texte lokalisiert (`ObjectType`, `JobTypeString`, `ScheduleType`, `ScheduleDescription`,

@@ -62,6 +62,7 @@ Die ZIP enthält Server-, Domänen- und Datenquellennamen des Kunden. Sie gehör
 - `tools\Save-ConfigurePreview.ps1 -OutDir <Ordner>` rendert die Oberfläche mit synthetischen Daten als PNG.
 - `tools\Test-InSandbox.ps1` testet Installation, geplante Aufgabe als SYSTEM, Update, Oberfläche und
   Deinstallation in Windows Sandbox gegen ein Fake-DPM-Modul (Ergebnisse unter `%TEMP%\dpm-monitor-sandbox`).
+  Mit `-PingUrl <URL eines Test-Checks>` meldet die Aufgabe dabei wirklich an Healthchecks.io.
 - Tests mit [Pester](https://pester.dev) 5, statische Analyse mit PSScriptAnalyzer (nur für die Entwicklung nötig):
 
   ```powershell
