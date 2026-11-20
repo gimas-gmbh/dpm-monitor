@@ -3,7 +3,8 @@
 Überwachung von Microsoft System Center Data Protection Manager (DPM) auf On-Premises-Servern,
 entwickelt von der gimas GmbH für die DPM-Server ihrer Kunden.
 
-> **Status:** in Entwicklung. Noch nicht für den Produktivbetrieb.
+> **Status:** Vorabversion (0.x) für den Pilotbetrieb. Getestet mit synthetischen Daten, in Windows Sandbox und
+> gegen Healthchecks.io, aber noch nicht auf einem echten DPM-Server. Version 1.0 folgt nach dem Pilot.
 
 ## Was es tun soll
 
