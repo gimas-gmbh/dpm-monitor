@@ -24,6 +24,8 @@ der Dienst hängt oder die Prüfung selbst nicht mehr läuft.
   Neu geschützte Datenquellen sind automatisch überwacht.
 - **Alarmsemantik:** Regelmäßige Lücken im Zeitplan (z. B. Wochenenden bei Werktags-Plänen, wöchentliche Jobs) lösen
   keinen Alarm aus. Ein einzelner verpasster Lauf darf toleriert werden, wiederholtes Ausbleiben nicht.
+  Unaufgelöste DPM-Alerts der Stufe „Error“ gelten als Fehler, wenn sie länger als eine Schwelle offen sind
+  (Vorschlag 24 h); Ausnahmen gelten auch für sie. Umsetzung nach den Daten aus dem Pilot.
 - **Unbekannt ist nicht ok:** Lässt sich ein Zustand nicht ermitteln, ist das ein Fehler, kein „alles in Ordnung“.
 - **Sicherheit:** Was als privilegierte geplante Aufgabe läuft, kommt aus einem Ort, den nur Admins beschreiben können.
   Keine gespeicherten Kennwörter.
@@ -188,4 +190,5 @@ Neue Weggabelungen und Abweichungen von Abschnitt 3 hier eintragen: Datum, Entsc
 | 2026-11-20 | Ende-zu-Ende-Test in Windows Sandbox (`tools\Test-InSandbox.ps1`): Installation aus markiertem Paket, Aufgabe als SYSTEM gegen ein Fake-DPM-Modul, Update, Oberfläche, Deinstallation | Prüft, was Unit-Tests nicht können (Aufgabenplanung, Rechte, Zonenmarkierung, SYSTEM-Kontext, Netz) | Test auf dem Entwicklerrechner (verändert das System) |
 | 2026-11-20 | Windows-Sicherheitswarnung beim Start aus heruntergeladener ZIP vorerst nur dokumentieren | Kostenlos; Code-Signing würde Warnung und `AllSigned` lösen, kostet aber ein Zertifikat und Pflege – Entscheidung offen | Code-Signing |
 | 2026-11-20 | Bis zum Pilot auf einem echten DPM-Server bleibt die Version 0.x; 1.0 nach ein, zwei Wochen Pilot ohne Fehlalarm | Lauf gegen echte DPM-Objekte und der Takt je Datenquellentyp sind noch unbestätigt | Sofort 1.0 |
-| 2026-11-20 | Bestandsaufnahme für den Pilot erweitert: Recovery Points je Speicherort (Disk/Band/online, je Gruppe die neuesten 30, dazu eine Übersicht), Speicher (`Get-DPMDiskStorage`), Alerts strukturiert mit Offen-Dauer | Grundlage für Langzeit- und Speicherüberwachung und für die Frage, ob unaufgelöste Error-Alerts als Fehler zählen sollen (Vorschlag: ab 24 h offen, Ausnahmen gelten; Entscheidung offen) | Diese Überwachungen ohne Daten bauen |
+| 2026-11-20 | Bestandsaufnahme für den Pilot erweitert: Recovery Points je Speicherort (Disk/Band/online, je Gruppe die neuesten 30, dazu eine Übersicht), Speicher (`Get-DPMDiskStorage`), Alerts strukturiert mit Offen-Dauer | Grundlage für Langzeit- und Speicherüberwachung und für die Frage, ob unaufgelöste Error-Alerts als Fehler zählen sollen (Vorschlag: ab 24 h offen, Ausnahmen gelten) | Diese Überwachungen ohne Daten bauen |
+| 2026-11-20 | Unaufgelöste Error-Alerts zählen als Fehler, wenn sie länger als eine Schwelle offen sind; Ausnahmen gelten auch für sie (Abschnitt 1 nach Rücksprache ergänzt). Schwelle und Umsetzung nach den Pilot-Daten | Dauerprobleme früher sehen, ohne einzelne Ausrutscher zu melden; die typische Offen-Dauer ist noch unbekannt | Jeder Error-Alert sofort als Fehler (widerspricht „einzelner Ausrutscher wird toleriert“); Alerts nur im Bericht |
