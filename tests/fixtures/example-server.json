@@ -1,0 +1,102 @@
+{
+  "ServerName": "SRV-DPM01",
+  "ProtectionGroups": [
+    {
+      "FriendlyName": "PG Fileserver",
+      "Schedules": [
+        { "Class": "ReplicationSchedule", "Frequency": 15 },
+        { "Class": "ShadowCopySchedule", "WeekDays": ["Mo", "Tu", "We", "Th", "Fr"], "TimesOfDay": ["07:00", "12:00", "18:04"] },
+        { "Class": "FullSchedule", "TimesOfDay": ["20:00"] }
+      ],
+      "Datasources": [
+        {
+          "Name": "D:\\",
+          "ProductionServerName": "srv-file01.example.local",
+          "LogicalPath": "D:\\",
+          "DatasourceId": "11111111-1111-1111-1111-111111111111",
+          "Type": "Microsoft.Internal.EnterpriseStorage.Dls.UI.ObjectModel.FileSystem.FsObjectType",
+          "ObjectType": "Volume",
+          "State": "Valid",
+          "LatestRecoveryPoint": "2026-11-20 12:00"
+        },
+        {
+          "Name": "System Protection",
+          "ProductionServerName": "srv-file01.example.local",
+          "LogicalPath": "Computer\\System Protection",
+          "DatasourceId": "22222222-2222-2222-2222-222222222222",
+          "Type": "Microsoft.Internal.EnterpriseStorage.Dls.UI.ObjectModel.SystemProtection.SystemProtectionObjectType",
+          "ObjectType": "System Protection",
+          "State": "Valid",
+          "LatestRecoveryPoint": "2026-11-19 20:12"
+        }
+      ]
+    },
+    {
+      "FriendlyName": "PG SQL",
+      "Schedules": [
+        { "Class": "ReplicationSchedule", "Frequency": 60 },
+        { "Class": "FullSchedule", "TimesOfDay": ["20:00"] }
+      ],
+      "Datasources": [
+        {
+          "Name": "master",
+          "ProductionServerName": "srv-sql01.example.local",
+          "LogicalPath": "SRV-SQL01\\master",
+          "DatasourceId": "33333333-3333-3333-3333-333333333333",
+          "Type": "Microsoft.Internal.EnterpriseStorage.Dls.UI.ObjectModel.SQL.SQLObjectType",
+          "ObjectType": "SQL Server 2019-Datenbank",
+          "State": "Valid",
+          "LatestRecoveryPoint": "2026-11-19 20:01"
+        },
+        {
+          "Name": "AppDb",
+          "ProductionServerName": "srv-sql01.example.local",
+          "LogicalPath": "SRV-SQL01\\AppDb",
+          "DatasourceId": "44444444-4444-4444-4444-444444444444",
+          "Type": "Microsoft.Internal.EnterpriseStorage.Dls.UI.ObjectModel.SQL.SQLObjectType",
+          "ObjectType": "SQL Server 2019-Datenbank",
+          "State": "Valid",
+          "LatestRecoveryPoint": "2026-11-20 13:00"
+        },
+        {
+          "Name": "ArchiveDb",
+          "ProductionServerName": "srv-sql01.example.local",
+          "LogicalPath": "SRV-SQL01\\ArchiveDb",
+          "DatasourceId": "55555555-5555-5555-5555-555555555555",
+          "Type": "Microsoft.Internal.EnterpriseStorage.Dls.UI.ObjectModel.SQL.SQLObjectType",
+          "ObjectType": "SQL Server 2019-Datenbank",
+          "State": "Invalid",
+          "LatestRecoveryPoint": "2026-09-01 20:03"
+        }
+      ]
+    },
+    {
+      "FriendlyName": "PG Hyper-V",
+      "Schedules": [
+        { "Class": "FullSchedule", "WeekDays": ["Mo", "Tu", "We", "Th", "Fr"], "TimesOfDay": ["22:00"] }
+      ],
+      "Datasources": [
+        {
+          "Name": "SRV-APP01",
+          "ProductionServerName": "srv-hv01.example.local",
+          "LogicalPath": "RCT\\SRV-APP01",
+          "DatasourceId": "66666666-6666-6666-6666-666666666666",
+          "Type": "Microsoft.Internal.EnterpriseStorage.Dls.UI.ObjectModel.HyperVDS.HyperVRctObjectType",
+          "ObjectType": "Microsoft Hyper-V",
+          "State": "Valid",
+          "LatestRecoveryPoint": "2026-11-19 22:40"
+        },
+        {
+          "Name": "Host Component",
+          "ProductionServerName": "srv-hv01.example.local",
+          "LogicalPath": "Host Component",
+          "DatasourceId": "77777777-7777-7777-7777-777777777777",
+          "Type": "Microsoft.Internal.EnterpriseStorage.Dls.UI.ObjectModel.HyperVDS.HyperVObjectType",
+          "ObjectType": "Microsoft Hyper-V",
+          "State": "Valid",
+          "LatestRecoveryPoint": "2026-11-19 22:05"
+        }
+      ]
+    }
+  ]
+}
