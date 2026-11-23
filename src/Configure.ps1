@@ -13,16 +13,42 @@
 param()
 
 $ErrorActionPreference = 'Stop'
+
+# Restart elevated before loading anything: the start menu shortcut starts
+# without administrator rights, and loading twice costs seconds.
+# Dot-sourcing (development tools) skips this.
+if ($MyInvocation.InvocationName -ne '.') {
+    $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        Start-Process -FilePath $powershell -Verb RunAs -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-WindowStyle', 'Hidden', '-File', "`"$PSCommandPath`""
+        )
+        return
+    }
+}
+
 $script:PackagePath = $PSScriptRoot
 Import-Module (Join-Path $script:PackagePath 'DpmMonitor.psm1') -Force
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+
 # Crisp on high-DPI screens (e.g. 4K): without this, Windows stretches the
 # DPI-unaware PowerShell window as a bitmap and the text gets blurry. Fonts
 # are given in points and scale by themselves; pixel sizes use Get-Px.
-if (-not ('DpmMonitorUi.Dpi' -as [type])) {
-    Add-Type -Namespace DpmMonitorUi -Name Dpi -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();'
+# The P/Invoke is built with Reflection.Emit: Add-Type -MemberDefinition would
+# start the C# compiler on every launch, which takes seconds on a server.
+function Set-ProcessDpiAware {
+    $name = New-Object Reflection.AssemblyName('DpmMonitorUiDpi')
+    $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly($name, [Reflection.Emit.AssemblyBuilderAccess]::Run)
+    $type = $assembly.DefineDynamicModule('DpmMonitorUiDpi').DefineType('DpmMonitorUiDpi.Dpi', 'Public, Class')
+    $method = $type.DefinePInvokeMethod('SetProcessDPIAware', 'user32.dll',
+        [Reflection.MethodAttributes]'Public, Static, PinvokeImpl', [Reflection.CallingConventions]::Standard,
+        [bool], [Type[]]@(), [Runtime.InteropServices.CallingConvention]::Winapi, [Runtime.InteropServices.CharSet]::Auto)
+    $method.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
+    [void]$type.CreateType().GetMethod('SetProcessDPIAware').Invoke($null, $null)
 }
-[void][DpmMonitorUi.Dpi]::SetProcessDPIAware()
+# Without DPI awareness the window is only blurry, so a failure must not stop the UI.
+try { Set-ProcessDpiAware } catch { Write-Verbose "SetProcessDPIAware fehlgeschlagen: $($_.Exception.Message)" }
 $graphics = [Drawing.Graphics]::FromHwnd([IntPtr]::Zero)
 $script:Scale = $graphics.DpiX / 96
 $graphics.Dispose()
@@ -724,11 +750,6 @@ function New-Context {
 # Start
 # ---------------------------------------------------------------------------
 
-function Test-Administrator {
-    $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-    $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
-
 function Start-Configuration {
     $installPath = (Get-DpmMonitorPath).InstallPath
     $inst = Get-DpmMonitorInstallation -InstallPath $installPath
@@ -787,13 +808,6 @@ function Start-Configuration {
 
 # Dot-sourcing (development tools) only loads the functions.
 if ($MyInvocation.InvocationName -ne '.') {
-    if (-not (Test-Administrator)) {
-        $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-        Start-Process -FilePath $powershell -Verb RunAs -ArgumentList @(
-            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-WindowStyle', 'Hidden', '-File', "`"$PSCommandPath`""
-        )
-        return
-    }
     try { Start-Configuration }
     catch { Show-Message "Unerwarteter Fehler: $($_.Exception.Message)" 'Error' }
 }

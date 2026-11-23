@@ -660,7 +660,7 @@ function Wait-DpmMonitorDatasourceProperty {
         while ($registered -gt 0 -and $sw.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
             $received = @(Get-Event -ErrorAction SilentlyContinue | Where-Object { $_.SourceIdentifier -like "$prefix*" }).Count
             if ($received -ge $registered) { break }
-            Start-Sleep -Milliseconds 500
+            Start-Sleep -Milliseconds 100
         }
         [pscustomobject]@{ Registered = $registered; Received = $received; Seconds = [Math]::Round($sw.Elapsed.TotalSeconds, 1) }
     }
