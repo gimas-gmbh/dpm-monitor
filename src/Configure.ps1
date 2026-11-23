@@ -470,20 +470,71 @@ function Update-Evaluation {
     $Ctx.SummaryLabel.Text = "Bewertung mit der aktuellen (auch ungespeicherten) Konfiguration: $(@($Ctx.Evaluation.Items).Count) Datenquellen, $failed mit Fehler."
 }
 
+# Reads DPM in a background runspace, so the window stays usable meanwhile:
+# loading the DPM module and connecting to DPM take several seconds. The
+# timer of the main window picks up the result (Complete-DatasourceStateLoad).
 function Update-DatasourceState {
-    param($Ctx, $Form)
-    Invoke-WithWaitCursor $Form {
-        try {
-            $Ctx.SummaryLabel.Text = 'DPM wird gelesen ...'
-            [Windows.Forms.Application]::DoEvents()
-            $Ctx.State = Get-DpmMonitorState
-        }
+    param($Ctx)
+    if ($Ctx.Loader) { return }
+    $Ctx.SummaryLabel.Text = 'DPM wird gelesen ...'
+    $Ctx.ReloadButton.Enabled = $false
+    try {
+        $runspace = [Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        $runspace.ApartmentState = 'STA'   # like powershell.exe and the scheduled task
+        $runspace.Open()
+        $ps = [PowerShell]::Create()
+        $ps.Runspace = $runspace
+        [void]$ps.AddScript({
+                param([string]$ModulePath)
+                $ErrorActionPreference = 'Stop'
+                Import-Module $ModulePath
+                Get-DpmMonitorState
+            }).AddArgument((Join-Path $script:PackagePath 'DpmMonitor.psm1'))
+        $Ctx.Loader = [pscustomobject]@{ PowerShell = $ps; Handle = $ps.BeginInvoke(); Watch = [Diagnostics.Stopwatch]::StartNew() }
+        $Ctx.LoadTimer.Start()
+    }
+    catch {
+        # Fallback: read in the foreground as before.
+        Write-Verbose "Hintergrund-Runspace fehlgeschlagen: $($_.Exception.Message)"
+        try { $Ctx.State = Get-DpmMonitorState }
         catch {
             $Ctx.State = $null
             $Ctx.SummaryLabel.Text = "DPM konnte nicht gelesen werden: $($_.Exception.Message)"
         }
+        $Ctx.ReloadButton.Enabled = $true
+        if ($Ctx.State) { Update-Evaluation $Ctx }
     }
-    if ($Ctx.State) { Update-Evaluation $Ctx }
+}
+
+function Complete-DatasourceStateLoad {
+    param($Ctx)
+    $loader = $Ctx.Loader
+    if ($null -eq $loader -or -not $loader.Handle.IsCompleted) { return }
+    $Ctx.LoadTimer.Stop()
+    $Ctx.Loader = $null
+    $Ctx.ReloadButton.Enabled = $true
+    $seconds = $loader.Watch.Elapsed.TotalSeconds
+    try {
+        $output = @($loader.PowerShell.EndInvoke($loader.Handle))
+        $state = @($output | Where-Object { $null -ne $_ -and $_.PSObject.TypeNames -contains 'DpmMonitor.State' }) | Select-Object -Last 1
+        if ($null -eq $state) { throw 'Keine Daten von DPM erhalten.' }
+        $Ctx.State = $state
+    }
+    catch {
+        # EndInvoke wraps the error of the runspace; show the original message.
+        $e = $_.Exception
+        while ($e.InnerException) { $e = $e.InnerException }
+        $Ctx.State = $null
+        $Ctx.SummaryLabel.Text = "DPM konnte nicht gelesen werden: $($e.Message)"
+    }
+    finally {
+        $loader.PowerShell.Runspace.Dispose()
+        $loader.PowerShell.Dispose()
+    }
+    if ($Ctx.State) {
+        Update-Evaluation $Ctx
+        $Ctx.SummaryLabel.Text += ' DPM gelesen in {0:N1} s.' -f $seconds
+    }
 }
 
 function Update-RuleList {
@@ -558,11 +609,14 @@ function Show-MainForm {
         [void]$list.Columns.Add($col[0], (Get-Px $col[1]))
     }
     $Ctx.DatasourceList = $list
+    $Ctx.LoadTimer = New-Object Windows.Forms.Timer
+    $Ctx.LoadTimer.Interval = 200
     $dsButtons = New-Control FlowLayoutPanel @{ Dock = 'Bottom'; Height = (Get-Px 40); Padding = (New-ScaledPadding 2) }
     $reload = New-Control Button @{ Text = 'Neu laden'; AutoSize = $true }
     $exclude = New-Control Button @{ Text = 'Ausnehmen …'; AutoSize = $true }
     $rule = New-Control Button @{ Text = 'Rhythmus festlegen …'; AutoSize = $true }
     $dsButtons.Controls.AddRange(@($reload, $exclude, $rule))
+    $Ctx.ReloadButton = $reload
     $tabDs.Controls.AddRange(@($list, $Ctx.SummaryLabel, $dsButtons))
 
     # --- Ausnahmen und Regeln ---
@@ -630,7 +684,12 @@ function Show-MainForm {
 
     # --- events ---
     $selected = { @($list.SelectedItems | ForEach-Object { $_.Tag }) }
-    $reload.Add_Click({ Update-DatasourceState $Ctx $form })
+    $reload.Add_Click({ Update-DatasourceState $Ctx })
+    $Ctx.LoadTimer.Add_Tick({ Complete-DatasourceStateLoad $Ctx })
+    $form.Add_FormClosed({
+            $Ctx.LoadTimer.Stop()
+            if ($Ctx.Loader) { [void]$Ctx.Loader.PowerShell.BeginStop($null, $null) }
+        })
     $exclude.Add_Click({
             $items = @(& $selected)
             if ($items.Count -eq 0) { Show-Message 'Bitte zuerst eine oder mehrere Datenquellen auswählen (Strg/Umschalt für mehrere).'; return }
@@ -743,6 +802,9 @@ function New-Context {
         BufferInput    = $null
         FallbackCheck  = $null
         FallbackInput  = $null
+        ReloadButton   = $null
+        LoadTimer      = $null   # polls the background read of DPM
+        Loader         = $null   # running background read
     }
 }
 
@@ -770,9 +832,9 @@ function Start-Configuration {
         $ctx.Config = Read-DpmMonitorConfig -Path $ctx.ConfigPath
         Show-MainForm -Ctx $ctx -OnShown {
             param($Ctx, $Form)
+            Update-DatasourceState $Ctx
             Update-StatusLine $Ctx
             Invoke-TaskNow -Ctx $Ctx -Form $Form -Heading 'Installiert. Ergebnis der ersten Prüfung:'
-            Update-DatasourceState $Ctx $Form
         }
         return
     }
@@ -800,9 +862,9 @@ function Start-Configuration {
         Save-DpmMonitorConfig -Config $ctx.Config -Path $ctx.ConfigPath
     }
     Show-MainForm -Ctx $ctx -OnShown {
-        param($Ctx, $Form)
+        param($Ctx)
+        Update-DatasourceState $Ctx
         Update-StatusLine $Ctx
-        Update-DatasourceState $Ctx $Form
     }
 }
 
