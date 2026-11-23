@@ -54,6 +54,11 @@ eines DPM-Servers aus. Es ändert nichts.
 2. Rechtsklick → „Mit PowerShell ausführen“. Das Skript fordert bei Bedarf Administratorrechte an.
 3. Ergebnis ist eine ZIP-Datei auf dem Desktop.
 
+Die Wiederherstellungspunkte liest das Skript zuletzt, weil das bei vielen Datenquellen lange dauert; die Konsole
+zeigt Dauer und Restzeit je Datenquelle. Online-Punkte fragt es nur bei Schutzgruppen mit Online-Zeitplan ab.
+Ein Abbruch mit Strg+C speichert das Teilergebnis und erstellt die ZIP trotzdem. Ohne Wiederherstellungspunkte:
+`powershell.exe -ExecutionPolicy Bypass -File Get-DpmInventory.ps1 -SkipRecoveryPoints`.
+
 Die ZIP enthält Server-, Domänen- und Datenquellennamen des Kunden. Sie gehört nicht in dieses Repository.
 
 ## Entwicklung
