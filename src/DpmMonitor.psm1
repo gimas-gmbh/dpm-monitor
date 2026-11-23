@@ -395,9 +395,12 @@ function Test-DpmMonitorRuleMatch {
     $true
 }
 
+# Data source (3) beats server within a protection group (2) beats protection group (1).
 function Get-DpmMonitorRuleSpecificity {
     param([object]$Rule)
-    if ([string](Get-ObjectPropertyValue $Rule 'LogicalPath') -ne '') { 2 } else { 1 }
+    if ([string](Get-ObjectPropertyValue $Rule 'LogicalPath') -ne '') { return 3 }
+    if ([string](Get-ObjectPropertyValue $Rule 'ProductionServerName') -ne '') { return 2 }
+    1
 }
 
 function Get-DpmMonitorRuleLabel {
@@ -486,7 +489,7 @@ function Invoke-DpmMonitorEvaluation {
                 continue
             }
 
-            # Overrides: data source rule beats protection group rule.
+            # Overrides: the most specific rule wins (data source, server, protection group).
             $override = $null
             for ($i = 0; $i -lt $overrides.Count; $i++) {
                 $ov = $overrides[$i]
@@ -800,12 +803,41 @@ function Get-DpmMonitorDefaultConfig {
     }
 }
 
+# Valid targets: a protection group, a server within a protection group,
+# or a data source (server and path, protection group optional).
 function Test-DpmMonitorRuleTarget {
     param([object]$Rule)
     $pg = [string](Get-ObjectPropertyValue $Rule 'ProtectionGroup')
     $server = [string](Get-ObjectPropertyValue $Rule 'ProductionServerName')
     $path = [string](Get-ObjectPropertyValue $Rule 'LogicalPath')
-    ($pg -ne '' -and $server -eq '' -and $path -eq '') -or ($server -ne '' -and $path -ne '')
+    ($pg -ne '' -and $path -eq '') -or ($server -ne '' -and $path -ne '')
+}
+
+function Get-DpmMonitorRuleTarget {
+    <#
+        .SYNOPSIS
+        Distinct rule targets for evaluated items (e.g. selected in the UI):
+        each data source, each server per protection group, or each protection group.
+    #>
+    [CmdletBinding()]
+    [OutputType([System.Collections.Specialized.OrderedDictionary])]
+    param(
+        [Parameter(Mandatory)][object[]]$Item,
+        [Parameter(Mandatory)][ValidateSet('Datasource', 'Server', 'ProtectionGroup')][string]$Scope
+    )
+    $seen = @{}
+    foreach ($i in $Item) {
+        $target = switch ($Scope) {
+            'Datasource' { [ordered]@{ ProductionServerName = [string]$i.ProductionServerName; LogicalPath = [string]$i.LogicalPath } }
+            'Server' { [ordered]@{ ProtectionGroup = [string]$i.ProtectionGroup; ProductionServerName = [string]$i.ProductionServerName } }
+            'ProtectionGroup' { [ordered]@{ ProtectionGroup = [string]$i.ProtectionGroup } }
+        }
+        # Names are compared case-insensitively, like in the evaluation.
+        $key = (@($target.Values) -join [char]0).ToLowerInvariant()
+        if ($seen.ContainsKey($key)) { continue }
+        $seen[$key] = $true
+        $target
+    }
 }
 
 function Test-DpmMonitorConfig {
@@ -841,7 +873,7 @@ function Test-DpmMonitorConfig {
     foreach ($ex in @(Get-ObjectPropertyValue $Config 'Exclusions')) {
         if ($null -eq $ex) { continue }
         $n++
-        if (-not (Test-DpmMonitorRuleTarget $ex)) { $errors.Add("Ausnahme $($n): braucht eine Schutzgruppe oder Server und Pfad.") }
+        if (-not (Test-DpmMonitorRuleTarget $ex)) { $errors.Add("Ausnahme $($n): braucht eine Schutzgruppe (optional mit Server) oder Server und Pfad.") }
         if ([string](Get-ObjectPropertyValue $ex 'Reason') -eq '') { $errors.Add("Ausnahme $($n): Grund fehlt.") }
         $until = [string](Get-ObjectPropertyValue $ex 'Until')
         $d = [datetime]::MinValue
@@ -854,7 +886,7 @@ function Test-DpmMonitorConfig {
     foreach ($ov in @(Get-ObjectPropertyValue $Config 'Overrides')) {
         if ($null -eq $ov) { continue }
         $n++
-        if (-not (Test-DpmMonitorRuleTarget $ov)) { $errors.Add("Regel $($n): braucht eine Schutzgruppe oder Server und Pfad.") }
+        if (-not (Test-DpmMonitorRuleTarget $ov)) { $errors.Add("Regel $($n): braucht eine Schutzgruppe (optional mit Server) oder Server und Pfad.") }
         $maxAge = Get-ObjectPropertyValue $ov 'MaxAgeHours'
         if ($null -ne $maxAge -and "$maxAge" -ne '') {
             if ([double]$maxAge -le 0) { $errors.Add("Regel $($n): MaxAgeHours muss größer als 0 sein.") }
@@ -1330,6 +1362,7 @@ Export-ModuleMember -Function @(
     'Get-DpmMonitorState'
     'Send-DpmMonitorPing'
     'Get-DpmMonitorDefaultConfig'
+    'Get-DpmMonitorRuleTarget'
     'Test-DpmMonitorConfig'
     'Read-DpmMonitorConfig'
     'Save-DpmMonitorConfig'
