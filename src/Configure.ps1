@@ -129,9 +129,13 @@ function Get-ItemLabel {
 
 function Get-RuleTargetText {
     param($Rule)
-    $pg = [string]$Rule.ProtectionGroup
-    $path = if ($Rule.PSObject.Properties['LogicalPath']) { [string]$Rule.LogicalPath } else { '' }
-    if ($path) { "$($Rule.ProductionServerName) | $path" } else { ('Schutzgruppe „{0}“' -f $pg) }
+    $get = { param($n) if ($Rule.PSObject.Properties[$n]) { [string]$Rule.$n } else { '' } }
+    $pg = & $get 'ProtectionGroup'
+    $server = & $get 'ProductionServerName'
+    $path = & $get 'LogicalPath'
+    if ($path) { return "$server | $path" }
+    if ($server) { return ('Server „{0}“ in Schutzgruppe „{1}“' -f $server, $pg) }
+    'Schutzgruppe „{0}“' -f $pg
 }
 
 function Get-RuleDetailText {
@@ -149,11 +153,53 @@ function Test-SameTarget {
     (& $get $A 'LogicalPath') -eq (& $get $B 'LogicalPath')
 }
 
-# Target of a new rule: one data source, or its whole protection group.
-function New-RuleTarget {
-    param($Item, [bool]$WholeGroup)
-    if ($WholeGroup) { [ordered]@{ ProtectionGroup = $Item.ProtectionGroup } }
-    else { [ordered]@{ ProductionServerName = $Item.ProductionServerName; LogicalPath = $Item.LogicalPath } }
+# Heading of a rule dialog: the selected data source, or a short list of them.
+function Get-SelectionText {
+    param([object[]]$Items)
+    if ($Items.Count -eq 1) { return Get-ItemLabel $Items[0] }
+    $max = 6
+    $lines = @("$($Items.Count) Datenquellen ausgewählt:") + @($Items | Select-Object -First $max | ForEach-Object { '  ' + (Get-ItemLabel $_) })
+    if ($Items.Count -gt $max) { $lines += "  … und $($Items.Count - $max) weitere" }
+    $lines -join "`n"
+}
+
+# Radio buttons for the scope of a new rule: the selected data sources,
+# their servers within their protection groups, or their protection groups.
+function New-ScopeChoice {
+    param([object[]]$Items)
+    $servers = @(Get-DpmMonitorRuleTarget -Item $Items -Scope Server)
+    $groups = @(Get-DpmMonitorRuleTarget -Item $Items -Scope ProtectionGroup)
+    $dsText = if ($Items.Count -eq 1) { 'Nur diese Datenquelle' } else { "Nur die $($Items.Count) ausgewählten Datenquellen" }
+    $serverText = if ($servers.Count -eq 1) { 'Alle Datenquellen von Server „{0}“ in Schutzgruppe „{1}“' -f $servers[0].ProductionServerName, $servers[0].ProtectionGroup }
+    else { "Alle Datenquellen dieser Server, je in ihrer Schutzgruppe ($($servers.Count) Server)" }
+    $groupText = if ($groups.Count -eq 1) { 'Ganze Schutzgruppe „{0}“' -f $groups[0].ProtectionGroup }
+    else { 'Ganze Schutzgruppen ' + (@($groups | ForEach-Object { '„{0}“' -f $_.ProtectionGroup }) -join ', ') }
+    $maxSize = New-ScaledSize 480 0
+    $choice = [ordered]@{
+        Datasource      = New-Control RadioButton @{ Text = $dsText; Checked = $true; AutoSize = $true; MaximumSize = $maxSize; Margin = (New-ScaledPadding 3 10 3 0) }
+        Server          = New-Control RadioButton @{ Text = $serverText; AutoSize = $true; MaximumSize = $maxSize }
+        ProtectionGroup = New-Control RadioButton @{ Text = $groupText; AutoSize = $true; MaximumSize = $maxSize }
+    }
+    $choice
+}
+
+function Get-ChosenScope {
+    param($Choice)
+    foreach ($k in $Choice.Keys) { if ($Choice[$k].Checked) { return $k } }
+}
+
+# Extra dialog height for a long selection list.
+function Get-SelectionHeight {
+    param([object[]]$Items)
+    if ($Items.Count -eq 1) { return 0 }
+    18 * ([Math]::Min($Items.Count, 7) + 2)
+}
+
+# Adds rules to a list; an existing rule for the same target is replaced.
+function Merge-Rule {
+    param([object[]]$Existing, [object[]]$New)
+    $kept = @($Existing | Where-Object { $old = $_; $null -ne $old -and @($New | Where-Object { Test-SameTarget $old $_ }).Count -eq 0 })
+    @($kept) + @($New)
 }
 
 # ---------------------------------------------------------------------------
@@ -190,14 +236,13 @@ function Show-ConnectionDialog {
 }
 
 function Show-ExclusionDialog {
-    <# Returns a new exclusion or $null. #>
-    param($Item)
-    $form = New-Dialog -Text 'Ausnahme festlegen' -Height 320
+    <# Returns the new exclusions (one per target), nothing if cancelled. #>
+    param([object[]]$Items)
+    $form = New-Dialog -Text 'Ausnahme festlegen' -Height (340 + (Get-SelectionHeight $Items))
     $stack = New-Stack
-    $stack.Controls.Add((New-Control Label @{ Text = (Get-ItemLabel $Item); AutoSize = $true; MaximumSize = (New-ScaledSize 480 0) }))
-    $single = New-Control RadioButton @{ Text = 'Nur diese Datenquelle'; Checked = $true; AutoSize = $true; Margin = (New-ScaledPadding 3 10 3 0) }
-    $group = New-Control RadioButton @{ Text = ('Ganze Schutzgruppe „{0}“' -f $Item.ProtectionGroup); AutoSize = $true }
-    $stack.Controls.AddRange(@($single, $group))
+    $stack.Controls.Add((New-Control Label @{ Text = (Get-SelectionText $Items); AutoSize = $true; MaximumSize = (New-ScaledSize 480 0) }))
+    $scope = New-ScopeChoice $Items
+    $stack.Controls.AddRange(@($scope.Values))
     $stack.Controls.Add((New-Control Label @{ Text = 'Grund (Pflicht)'; AutoSize = $true; Margin = (New-ScaledPadding 3 10 3 0) }))
     $reason = New-Control TextBox @{ Width = (Get-Px 480) }
     $stack.Controls.Add($reason)
@@ -211,23 +256,23 @@ function Show-ExclusionDialog {
             if ($reason.Text.Trim() -eq '') { Show-Message 'Bitte einen Grund angeben.' 'Warning'; return }
             $form.DialogResult = 'OK'
         })
-    if ($form.ShowDialog() -ne 'OK') { return $null }
-    $ex = New-RuleTarget -Item $Item -WholeGroup $group.Checked
-    $ex.Reason = $reason.Text.Trim()
-    if ($limited.Checked) { $ex.Until = $until.Value.ToString('yyyy-MM-dd') }
-    [pscustomobject]$ex
+    if ($form.ShowDialog() -ne 'OK') { return }
+    foreach ($ex in @(Get-DpmMonitorRuleTarget -Item $Items -Scope (Get-ChosenScope $scope))) {
+        $ex.Reason = $reason.Text.Trim()
+        if ($limited.Checked) { $ex.Until = $until.Value.ToString('yyyy-MM-dd') }
+        [pscustomobject]$ex
+    }
 }
 
 function Show-RuleDialog {
-    <# Returns a new override (expected schedule or maximum age) or $null. #>
-    param($Item)
-    $form = New-Dialog -Text 'Erwarteten Rhythmus festlegen' -Height 390
+    <# Returns the new overrides (expected schedule or maximum age, one per target), nothing if cancelled. #>
+    param([object[]]$Items)
+    $form = New-Dialog -Text 'Erwarteten Rhythmus festlegen' -Height (410 + (Get-SelectionHeight $Items))
     $stack = New-Stack
-    $stack.Controls.Add((New-Control Label @{ Text = (Get-ItemLabel $Item); AutoSize = $true; MaximumSize = (New-ScaledSize 480 0) }))
-    $stack.Controls.Add((New-Control Label @{ AutoSize = $true; MaximumSize = (New-ScaledSize 480 0); Text = 'Ersetzt den aus DPM gelesenen Zeitplan. Nur nötig, wenn der DPM-Zeitplan nicht passt.' }))
-    $single = New-Control RadioButton @{ Text = 'Nur diese Datenquelle'; Checked = $true; AutoSize = $true; Margin = (New-ScaledPadding 3 10 3 0) }
-    $group = New-Control RadioButton @{ Text = ('Ganze Schutzgruppe „{0}“' -f $Item.ProtectionGroup); AutoSize = $true }
-    $stack.Controls.AddRange(@($single, $group))
+    $stack.Controls.Add((New-Control Label @{ Text = (Get-SelectionText $Items); AutoSize = $true; MaximumSize = (New-ScaledSize 480 0) }))
+    $stack.Controls.Add((New-Control Label @{ AutoSize = $true; MaximumSize = (New-ScaledSize 480 0); Margin = (New-ScaledPadding 3 6 3 0); Text = 'Ersetzt den aus DPM gelesenen Zeitplan. Nur nötig, wenn der DPM-Zeitplan nicht passt.' }))
+    $scope = New-ScopeChoice $Items
+    $stack.Controls.AddRange(@($scope.Values))
     $preset = New-Control ComboBox @{ DropDownStyle = 'DropDownList'; Width = (Get-Px 220); Margin = (New-ScaledPadding 3 10 3 3) }
     [void]$preset.Items.AddRange($script:Presets)
     $preset.SelectedIndex = 0
@@ -265,25 +310,29 @@ function Show-RuleDialog {
     $ok = Add-DialogButton -Form $form
     $ok.Add_Click({
             $form.Tag = $null
-            $rule = New-RuleTarget -Item $Item -WholeGroup $group.Checked
+            $spec = [ordered]@{}
             switch ($preset.SelectedIndex) {
-                0 { $rule.WeekDays = $script:DayOrder }
-                1 { $rule.WeekDays = $script:DayOrder[0..4] }
-                4 { $rule.MaxAgeHours = [int]$hours.Value }
-                default { $rule.WeekDays = @($script:DayOrder | Where-Object { $dayBoxes[$_].Checked }) }
+                0 { $spec.WeekDays = $script:DayOrder }
+                1 { $spec.WeekDays = $script:DayOrder[0..4] }
+                4 { $spec.MaxAgeHours = [int]$hours.Value }
+                default { $spec.WeekDays = @($script:DayOrder | Where-Object { $dayBoxes[$_].Checked }) }
             }
             if ($preset.SelectedIndex -ne 4) {
-                $rule.TimesOfDay = @($times.Text -split '[,; ]+' | Where-Object { $_ })
+                $spec.TimesOfDay = @($times.Text -split '[,; ]+' | Where-Object { $_ })
+            }
+            $newRules = foreach ($rule in @(Get-DpmMonitorRuleTarget -Item $Items -Scope (Get-ChosenScope $scope))) {
+                foreach ($k in $spec.Keys) { $rule[$k] = $spec[$k] }
+                [pscustomobject]$rule
             }
             $probe = Get-DpmMonitorDefaultConfig
             $probe.PingUrl = 'https://example.invalid/'
-            $probe.Overrides = @([pscustomobject]$rule)
+            $probe.Overrides = @($newRules | Select-Object -First 1)
             $errors = @(Test-DpmMonitorConfig -Config $probe | Where-Object { $_ -like 'Regel*' })
             if ($errors.Count -gt 0) { Show-Message (($errors -replace '^Regel 1: ', '') -join "`n") 'Warning'; return }
-            $form.Tag = [pscustomobject]$rule
+            $form.Tag = @($newRules)
             $form.DialogResult = 'OK'
         })
-    if ($form.ShowDialog() -ne 'OK') { return $null }
+    if ($form.ShowDialog() -ne 'OK') { return }
     $form.Tag
 }
 
@@ -471,7 +520,7 @@ function Show-MainForm {
     # --- Datenquellen ---
     $tabDs = New-Object Windows.Forms.TabPage('Datenquellen')
     $Ctx.SummaryLabel = New-Control Label @{ Dock = 'Top'; Height = (Get-Px 26); Padding = (New-ScaledPadding 4 6 4 0); Text = 'Noch nicht geladen.' }
-    $list = New-Control ListView @{ View = 'Details'; FullRowSelect = $true; MultiSelect = $false; Dock = 'Fill'; HideSelection = $false }
+    $list = New-Control ListView @{ View = 'Details'; FullRowSelect = $true; MultiSelect = $true; Dock = 'Fill'; HideSelection = $false }
     foreach ($col in @(@('Status', 90), @('Schutzgruppe', 150), @('Server', 190), @('Pfad', 200), @('Letzter Punkt', 110), @('Hinweis', 420))) {
         [void]$list.Columns.Add($col[0], (Get-Px $col[1]))
     }
@@ -485,7 +534,7 @@ function Show-MainForm {
 
     # --- Ausnahmen und Regeln ---
     $tabRules = New-Object Windows.Forms.TabPage('Ausnahmen und Regeln')
-    $rules = New-Control ListView @{ View = 'Details'; FullRowSelect = $true; MultiSelect = $false; Dock = 'Fill'; HideSelection = $false }
+    $rules = New-Control ListView @{ View = 'Details'; FullRowSelect = $true; MultiSelect = $true; Dock = 'Fill'; HideSelection = $false }
     foreach ($col in @(@('Art', 130), @('Gilt für', 330), @('Details', 480))) { [void]$rules.Columns.Add($col[0], (Get-Px $col[1])) }
     $Ctx.RuleList = $rules
     $ruleButtons = New-Control FlowLayoutPanel @{ Dock = 'Bottom'; Height = (Get-Px 40); Padding = (New-ScaledPadding 2) }
@@ -547,30 +596,31 @@ function Show-MainForm {
     $form.Controls.AddRange(@($tabs, $Ctx.StatusLabel, $bottom))
 
     # --- events ---
-    $selected = { if ($list.SelectedItems.Count -eq 1) { $list.SelectedItems[0].Tag } else { $null } }
+    $selected = { @($list.SelectedItems | ForEach-Object { $_.Tag }) }
     $reload.Add_Click({ Update-DatasourceState $Ctx $form })
     $exclude.Add_Click({
-            $item = & $selected
-            if (-not $item) { Show-Message 'Bitte zuerst eine Datenquelle auswählen.'; return }
-            $ex = Show-ExclusionDialog -Item $item
-            if (-not $ex) { return }
-            $Ctx.Config.Exclusions = @(@($Ctx.Config.Exclusions) | Where-Object { -not (Test-SameTarget $_ $ex) }) + $ex
+            $items = @(& $selected)
+            if ($items.Count -eq 0) { Show-Message 'Bitte zuerst eine oder mehrere Datenquellen auswählen (Strg/Umschalt für mehrere).'; return }
+            $new = @(Show-ExclusionDialog -Items $items)
+            if ($new.Count -eq 0) { return }
+            $Ctx.Config.Exclusions = @(Merge-Rule -Existing @($Ctx.Config.Exclusions) -New $new)
             Set-Dirty $Ctx; Update-RuleList $Ctx; Update-Evaluation $Ctx
         })
     $rule.Add_Click({
-            $item = & $selected
-            if (-not $item) { Show-Message 'Bitte zuerst eine Datenquelle auswählen.'; return }
-            $ov = Show-RuleDialog -Item $item
-            if (-not $ov) { return }
-            $Ctx.Config.Overrides = @(@($Ctx.Config.Overrides) | Where-Object { -not (Test-SameTarget $_ $ov) }) + $ov
+            $items = @(& $selected)
+            if ($items.Count -eq 0) { Show-Message 'Bitte zuerst eine oder mehrere Datenquellen auswählen (Strg/Umschalt für mehrere).'; return }
+            $new = @(Show-RuleDialog -Items $items)
+            if ($new.Count -eq 0) { return }
+            $Ctx.Config.Overrides = @(Merge-Rule -Existing @($Ctx.Config.Overrides) -New $new)
             Set-Dirty $Ctx; Update-RuleList $Ctx; Update-Evaluation $Ctx
         })
     $list.Add_DoubleClick({ $exclude.PerformClick() })
     $removeRule.Add_Click({
-            if ($rules.SelectedItems.Count -ne 1) { Show-Message 'Bitte zuerst einen Eintrag auswählen.'; return }
-            $target = $rules.SelectedItems[0].Tag
-            $Ctx.Config.Exclusions = @(@($Ctx.Config.Exclusions) | Where-Object { -not [object]::ReferenceEquals($_, $target) })
-            $Ctx.Config.Overrides = @(@($Ctx.Config.Overrides) | Where-Object { -not [object]::ReferenceEquals($_, $target) })
+            if ($rules.SelectedItems.Count -eq 0) { Show-Message 'Bitte zuerst einen oder mehrere Einträge auswählen.'; return }
+            $targets = @($rules.SelectedItems | ForEach-Object { $_.Tag })
+            $isSelected = { param($o) @($targets | Where-Object { [object]::ReferenceEquals($_, $o) }).Count -gt 0 }
+            $Ctx.Config.Exclusions = @(@($Ctx.Config.Exclusions) | Where-Object { -not (& $isSelected $_) })
+            $Ctx.Config.Overrides = @(@($Ctx.Config.Overrides) | Where-Object { -not (& $isSelected $_) })
             Set-Dirty $Ctx; Update-RuleList $Ctx; Update-Evaluation $Ctx
         })
     $editUrl.Add_Click({

@@ -28,7 +28,8 @@ Details, Ziele und Entscheidungen: [DESIGN.md](DESIGN.md).
 4. Ping-URL eintragen, „Installieren“. Die erste Prüfung läuft sofort, das Ergebnis wird angezeigt.
 
 Danach öffnet sich die Oberfläche über das Startmenü („gimas DPM Monitor“). Dort lassen sich Datenquellen
-ausnehmen (mit Grund, optional befristet), abweichende Rhythmen festlegen, die Prüfung sofort starten und
+ausnehmen (mit Grund, optional befristet), abweichende Rhythmen festlegen (je Datenquelle, Server in einer
+Schutzgruppe oder ganze Schutzgruppe, auch für mehrere ausgewählte Datenquellen auf einmal), die Prüfung sofort starten und
 dpm-monitor wieder entfernen. Für ein Update das neue Paket entpacken und dessen `Konfigurieren.cmd` starten;
 die Konfiguration bleibt erhalten.
 
