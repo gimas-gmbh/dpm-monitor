@@ -73,6 +73,9 @@ der Dienst hängt oder die Prüfung selbst nicht mehr läuft.
   die Schrift wird unscharf. Abhilfe: `SetProcessDPIAware()` vor dem ersten Fenster und Pixelmaße mit
   dem DPI-Faktor skalieren (Schriften in Punkt skalieren selbst).
 - In der Windows Sandbox lässt sich `Microsoft.PowerShell.Archive` (`Expand-Archive`) nicht laden.
+- Strg+C in einem Konsolenskript unter Windows PowerShell 5.1: `finally`-Blöcke laufen nicht verlässlich zu Ende
+  (gesehen: weder Speichern noch `Stop-Transcript` noch ZIP). Wer bei Abbruch noch etwas tun muss, liest Strg+C
+  mit `[Console]::TreatControlCAsInput` als Taste und schreibt Ergebnisse laufend.
 - `Add-Type` mit C#-Quelltext (auch `-MemberDefinition`) startet in Windows PowerShell 5.1 bei jedem Aufruf den
   C#-Compiler; das kostet auf Servern Sekunden. Für einzelne P/Invokes `Reflection.Emit` nutzen.
 - Windows PowerShell 5.1 macht Stderr nativer Programme bei `2>&1` zu Fehlerobjekten; mit
@@ -144,7 +147,10 @@ deutsche Oberfläche, 26 bzw. 139 Datenquellen, 2 bzw. 3 Schutzgruppen; Stand 20
   Ohne aktuellen Bandpunkt waren genau die 13 inkonsistenten, seit Langem nicht mehr gesicherten Datenquellen.
 - `RPExpirtyTime` (sic) ist immer `0001-01-01`, `RetentionType` leer.
 - Laufzeit: 139 Datenquellen mit je einem Aufruf ohne und einem mit `-Online` brauchten knapp 3 h (rund 75 s pro
-  Datenquelle). Für die Prüfung alle 4 h ist `Get-DPMRecoveryPoint` damit zu langsam; eine Bandüberwachung
+  Datenquelle). Im zweiten Lauf brauchten SQL-Datenquellen nur 1–4 s, die erste Hyper-V-Datenquelle hing über
+  6 min. Vermutete Ursache: Die Bestandsaufnahme las alle Eigenschaften der Punkte, und manche (z. B.
+  `FileSpecifications`, `PhysicalPath`, `ReferencedROList`, `DataSource`) lädt DPM erst beim Zugriff nach. Sie liest
+  jetzt nur eine feste Liste und misst Abruf und Verarbeitung getrennt. Für die Prüfung alle 4 h ist `Get-DPMRecoveryPoint` damit zu langsam; eine Bandüberwachung
   muss anders oder seltener prüfen. Wie sich die Zeit auf die beiden Aufrufe verteilt, zeigt der nächste Lauf
   (`43_recoverypoints_abrufdauer.csv`).
 
