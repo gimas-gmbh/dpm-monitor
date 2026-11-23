@@ -509,33 +509,51 @@ function Update-Evaluation {
 # Reads DPM in a background runspace, so the window stays usable meanwhile:
 # loading the DPM module and connecting to DPM take several seconds. The
 # timer of the main window picks up the result (Complete-DatasourceStateLoad).
+# One runspace with one STA thread serves the whole window, so a reload uses
+# the same DPM connection and the already loaded modules.
 function Update-DatasourceState {
     param($Ctx)
     if ($Ctx.Loader) { return }
     $Ctx.SummaryLabel.Text = 'DPM wird gelesen ...'
+    $Ctx.SummaryLabel.Refresh()
     $Ctx.ReloadButton.Enabled = $false
+    $ps = $null
     try {
-        $runspace = [Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
-        $runspace.ApartmentState = 'STA'   # like powershell.exe and the scheduled task
-        $runspace.Open()
+        if ($null -eq $Ctx.Runspace) {
+            $runspace = [Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+            $runspace.ApartmentState = 'STA'   # like powershell.exe and the scheduled task
+            $runspace.ThreadOptions = 'ReuseThread'
+            $runspace.Open()
+            $Ctx.Runspace = $runspace
+        }
         $ps = [PowerShell]::Create()
-        $ps.Runspace = $runspace
+        $ps.Runspace = $Ctx.Runspace
         [void]$ps.AddScript({
                 param([string]$ModulePath)
                 $ErrorActionPreference = 'Stop'
-                Import-Module $ModulePath
-                Get-DpmMonitorState
+                $watch = [Diagnostics.Stopwatch]::StartNew()
+                # In a catch block $_ is the original error (e.g. from DPM), not a wrapper.
+                try {
+                    Import-Module $ModulePath
+                    $state = Get-DpmMonitorState
+                }
+                catch { throw $_.Exception.Message }
+                [pscustomobject]@{ State = $state; Seconds = $watch.Elapsed.TotalSeconds }
             }).AddArgument((Join-Path $script:PackagePath 'DpmMonitor.psm1'))
-        $Ctx.Loader = [pscustomobject]@{ PowerShell = $ps; Handle = $ps.BeginInvoke(); Watch = [Diagnostics.Stopwatch]::StartNew() }
+        $handle = $ps.BeginInvoke()
         $Ctx.LoadTimer.Start()
+        $Ctx.Loader = [pscustomobject]@{ PowerShell = $ps; Handle = $handle }
     }
     catch {
-        # Fallback: read in the foreground as before.
+        # Fallback when the runspace cannot be started: read in the foreground as before.
         Write-Verbose "Hintergrund-Runspace fehlgeschlagen: $($_.Exception.Message)"
-        try { $Ctx.State = Get-DpmMonitorState }
-        catch {
-            $Ctx.State = $null
-            $Ctx.SummaryLabel.Text = "DPM konnte nicht gelesen werden: $($_.Exception.Message)"
+        if ($ps) { $ps.Dispose() }
+        Invoke-WithWaitCursor $Ctx.Form {
+            try { $Ctx.State = Get-DpmMonitorState }
+            catch {
+                $Ctx.State = $null
+                $Ctx.SummaryLabel.Text = "DPM konnte nicht gelesen werden: $($_.Exception.Message)"
+            }
         }
         $Ctx.ReloadButton.Enabled = $true
         if ($Ctx.State) { Update-Evaluation $Ctx }
@@ -549,24 +567,21 @@ function Complete-DatasourceStateLoad {
     $Ctx.LoadTimer.Stop()
     $Ctx.Loader = $null
     $Ctx.ReloadButton.Enabled = $true
-    $seconds = $loader.Watch.Elapsed.TotalSeconds
+    $seconds = $null
     try {
-        $output = @($loader.PowerShell.EndInvoke($loader.Handle))
-        $state = @($output | Where-Object { $null -ne $_ -and $_.PSObject.TypeNames -contains 'DpmMonitor.State' }) | Select-Object -Last 1
-        if ($null -eq $state) { throw 'Keine Daten von DPM erhalten.' }
-        $Ctx.State = $state
+        $result = @($loader.PowerShell.EndInvoke($loader.Handle)) | Select-Object -Last 1
+        if ($null -eq $result -or $null -eq $result.State) { throw 'Keine Daten von DPM erhalten.' }
+        $Ctx.State = $result.State
+        $seconds = $result.Seconds
     }
     catch {
-        # EndInvoke wraps the error of the runspace; show the original message.
+        # A .NET call wraps the error of the runspace once; show the message thrown there.
         $e = $_.Exception
-        while ($e.InnerException) { $e = $e.InnerException }
+        if ($e -is [Management.Automation.MethodInvocationException] -and $e.InnerException) { $e = $e.InnerException }
         $Ctx.State = $null
         $Ctx.SummaryLabel.Text = "DPM konnte nicht gelesen werden: $($e.Message)"
     }
-    finally {
-        $loader.PowerShell.Runspace.Dispose()
-        $loader.PowerShell.Dispose()
-    }
+    finally { $loader.PowerShell.Dispose() }
     if ($Ctx.State) {
         Update-Evaluation $Ctx
         $Ctx.SummaryLabel.Text += ' DPM gelesen in {0:N1} s.' -f $seconds
@@ -733,7 +748,10 @@ function Show-MainForm {
     $Ctx.LoadTimer.Add_Tick({ Complete-DatasourceStateLoad $Ctx })
     $form.Add_FormClosed({
             $Ctx.LoadTimer.Stop()
+            $Ctx.LoadTimer.Dispose()
+            # A running read is only asked to stop; powershell.exe ends with the script anyway.
             if ($Ctx.Loader) { [void]$Ctx.Loader.PowerShell.BeginStop($null, $null) }
+            elseif ($Ctx.Runspace) { $Ctx.Runspace.Dispose() }
         })
     $exclude.Add_Click({
             $items = @(& $selected)
@@ -852,6 +870,7 @@ function New-Context {
         SortDescending = $false
         LoadTimer      = $null   # polls the background read of DPM
         Loader         = $null   # running background read
+        Runspace       = $null   # background runspace for DPM, opened on first use
     }
 }
 
