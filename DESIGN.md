@@ -114,19 +114,42 @@ deutsche Oberfläche, 26 bzw. 139 Datenquellen, 2 bzw. 3 Schutzgruppen; Stand 20
   `-LongTerm Tape` liefert `ArchiveSchedule` (`Frequency`, `Interval`, `WeekDay(s)`, `RelativeWeekDay`,
   `RelativeInterval`, `ScheduleTime` mit Datum als Anker, `Generation`, `Vault`), gesehen monatlich am 1.
 
-*Welcher Zeitplan erzeugt die Wiederherstellungspunkte* (vorläufig, abgeleitet aus `LatestRecoveryPoint`;
-die Liste der einzelnen Punkte fehlte wegen eines Skriptfehlers und wird mit einem zweiten Lauf nachgeholt)
+*Welcher Zeitplan erzeugt die Wiederherstellungspunkte* (zuerst abgeleitet aus `LatestRecoveryPoint`, am
+2026-11-23 auf dem Server mit 139 Datenquellen mit der Liste der einzelnen Punkte bestätigt)
 - SQL: Jede Datenbank bekommt einen Punkt zur Schnellen vollständigen Sicherung. Ein Teil der Datenbanken
-  (vermutlich Wiederherstellungsmodell „vollständig“) bekommt zusätzlich bei jeder Synchronisation einen Punkt;
-  deren letzter Punkt lag genau auf dem Synchronisationsraster (stündlich bzw. alle 4 h).
-  Verlässlicher Takt für alle SQL-Datenbanken ist damit der `FullSchedule`.
+  (vermutlich Wiederherstellungsmodell „vollständig“, 72 von 109 gültigen) bekommt zusätzlich bei jeder
+  Synchronisation einen Punkt, genau auf dem Synchronisationsraster (stündlich bzw. alle 4 h).
+  Verlässlicher Takt für alle SQL-Datenbanken ist damit der `FullSchedule`: Jede gültige Datenquelle hatte im
+  erfassten Zeitraum an jedem Tag einen solchen Punkt, ohne Lücke.
+- Unterscheidbar am Punkt selbst: `IsIncremental` = `False` bei der Schnellen vollständigen Sicherung,
+  `True` bei Synchronisationspunkten.
 - Hyper-V: Punkt zur Schnellen vollständigen Sicherung.
 - Systemschutz (Bare Metal/Systemstatus): Punkt zur Schnellen vollständigen Sicherung, auch in einer Schutzgruppe,
   die zusätzlich einen Schattenkopie-Zeitplan hat.
 - Volume (Dateidaten): Punkt zur Schattenkopie-Zeit.
 - Die Punkte einer Schutzgruppe entstehen nacheinander: bis ca. 60 min nach dem geplanten Start bei rund
-  70 Datenquellen. Der geplante Puffer von 3 h reicht dafür.
-- Bei allen Datenquellen war `LatestRecoveryPoint` = `LatestDiskRecoveryPoint`, auch mit Online- oder Bandsicherung.
+  70 Datenquellen; bei rund 110 Datenquellen meist 60–80 min, in 30 Tagen höchstens gut 2 h.
+  Der geplante Puffer von 3 h reicht dafür.
+- `LatestRecoveryPoint` ist der neueste Disk-Punkt, nie ein Bandpunkt (Bandpunkte sind Kopien älterer
+  Disk-Punkte). Im ersten Lauf war `LatestDiskRecoveryPoint` gleich, im zweiten überall `0001-01-01`
+  (ebenso `TotalDiskRecoveryPoints` = 0). Die `…Disk…`-Felder sind also unzuverlässig; die Prüfung nutzt sie nicht.
+
+*Wiederherstellungspunkte im Detail* (`Get-DPMRecoveryPoint`, DPM 2022)
+- Speicherort in `Location`/`DataLocation`: `Disk` oder `Media` (Band). Online-Punkte kamen nicht vor:
+  keine Schutzgruppe mit Online-Zeitplan (`-LongTerm Online` leer), `-Online` lieferte nichts.
+- Bandpunkte entstehen hier monatlich am 1. (monatlicher Band-Zeitplan am 1. um 23:00). Ihr
+  `RepresentedPointInTime` ist der Zeitpunkt des kopierten Disk-Punkts, also vor der Bandsicherung.
+  Ohne aktuellen Bandpunkt waren genau die 13 inkonsistenten, seit Langem nicht mehr gesicherten Datenquellen.
+- `RPExpirtyTime` (sic) ist immer `0001-01-01`, `RetentionType` leer.
+- Laufzeit: 139 Datenquellen mit je einem Aufruf ohne und einem mit `-Online` brauchten knapp 3 h (rund 75 s pro
+  Datenquelle). Für die Prüfung alle 4 h ist `Get-DPMRecoveryPoint` damit zu langsam; eine Bandüberwachung
+  muss anders oder seltener prüfen. Wie sich die Zeit auf die beiden Aufrufe verteilt, zeigt der nächste Lauf
+  (`43_recoverypoints_abrufdauer.csv`).
+
+*Alerts* (zweiter Server, Stand 2026-11-23)
+- Offen waren zwei `ShadowCopyFailedAlert` der Stufe Error (unter 1 h offen) und zwei Warnungen
+  (Bandvorrat seit über 260 Tagen, Katalog seit 5 Tagen). Warnungen bleiben also lange offen; nur Error-Alerts
+  mit Schwelle zu zählen passt dazu.
 
 *Asynchrones Nachladen*
 - Das Warten auf `DataSourceChangedEvent` funktioniert: keine `0001-01-01` in `LatestRecoveryPoint` und

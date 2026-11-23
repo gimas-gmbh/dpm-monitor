@@ -432,12 +432,13 @@ try {
                             }
                             continue
                         }
-                        # Group by all simple properties that look like a storage location, so that
-                        # rare tape or online points are not pushed out by frequent disk points.
+                        # Group by all simple properties that look like a storage location (and by
+                        # IsIncremental), so that rare tape, online or express full points are not
+                        # pushed out by frequent disk or synchronisation points.
                         $groups = $all | Group-Object {
                             $rp = $_
                             @($rp.PSObject.Properties | Where-Object {
-                                    $_.Name -match 'Location|Tape|Online|Cloud|Disk|Media|Vault' -and
+                                    $_.Name -match 'Location|Tape|Online|Cloud|Disk|Media|Vault|IsIncremental' -and
                                     ($null -eq $_.Value -or $_.Value -is [string] -or $_.Value -is [ValueType])
                                 } | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join '; '
                         }
