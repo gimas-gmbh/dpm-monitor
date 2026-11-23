@@ -151,7 +151,8 @@ deutsche Oberfläche, 26 bzw. 139 Datenquellen, 2 bzw. 3 Schutzgruppen; Stand 20
   6 min. Vermutete Ursache: Die Bestandsaufnahme las alle Eigenschaften der Punkte, und manche (z. B.
   `FileSpecifications`, `PhysicalPath`, `ReferencedROList`, `DataSource`) lädt DPM erst beim Zugriff nach. Sie liest
   jetzt nur eine feste Liste und misst Abruf, Verarbeitung (`43_recoverypoints_abrufdauer.csv`) und je Art von
-  Punkt die Lesedauer jeder Eigenschaft (`44_recoverypoint_eigenschaften_dauer.csv`). Ob `Get-DPMRecoveryPoint`
+  Punkt die Lesedauer der gelesenen Eigenschaften (`44_recoverypoint_eigenschaften_dauer.csv`; die verdächtigen
+  liest sie nicht mehr, ein schneller Lauf bestätigt die Vermutung also nur indirekt). Ob `Get-DPMRecoveryPoint`
   für eine Bandüberwachung schnell genug ist, zeigt der nächste Lauf; für die Prüfung alle 4 h war es bisher zu
   langsam.
 

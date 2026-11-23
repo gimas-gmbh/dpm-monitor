@@ -17,8 +17,9 @@
     Mit Zeitgrenze, z. B. 30 Minuten:
       powershell.exe -ExecutionPolicy Bypass -File Get-DpmInventory.ps1 -RecoveryPointMaxMinutes 30
 #>
-# AsyncTimeoutSeconds is used inside an Invoke-Step script block.
+# AsyncTimeoutSeconds and RecoveryPointMaxMinutes are used inside Invoke-Step script blocks.
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'AsyncTimeoutSeconds')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'RecoveryPointMaxMinutes')]
 [CmdletBinding()]
 param(
     # Wie viele der juengsten Recovery Points pro Datenquelle erfasst werden
@@ -439,10 +440,17 @@ try {
                 }
             }
             if ($script:keys) {
+                try {
+                    # A native program (e.g. netsh) may have reset the console mode.
+                    [Console]::TreatControlCAsInput = $true
+                    # Keys pressed during earlier steps must not end this step at once.
+                    if (Test-StopKey) { Write-Host '   Vorher gedrueckte Tasten verworfen.' }
+                }
+                catch { Write-Verbose $_.Exception.Message }
                 Write-Host '   Beenden mit Strg+C, Q oder Esc: nach der aktuellen Datenquelle, danach entsteht die ZIP.'
             }
-            Write-Host '   Ergebnisse werden nach jeder Datenquelle gespeichert; auch nach Schliessen des Fensters bleiben sie im Ordner.'
-            if ($RecoveryPointMaxMinutes -gt 0) { Write-Host "   Zeitgrenze: $RecoveryPointMaxMinutes min" }
+            Write-Host '   Die CSV-Dateien werden nach jeder Datenquelle ergaenzt; auch nach Schliessen des Fensters bleiben sie im Ordner.'
+            if ($RecoveryPointMaxMinutes -gt 0) { Write-Host "   Zeitgrenze: $RecoveryPointMaxMinutes min (geprueft zwischen den Abfragen)" }
             # Rows not yet written (e.g. because a CSV was open in Excel); retried after each data source.
             $pending = @{
                 '40_recoverypoints.csv'            = New-Object System.Collections.Generic.List[object]
@@ -490,7 +498,10 @@ try {
                     # One data source must not end the step: errors are logged and the next one follows.
                     try {
                         foreach ($source in $sources) {
-                            if ($source.Name -ne 'Standard' -and $script:keys -and (Test-StopKey)) { $stopReason = 'per Taste'; break }
+                            if ($source.Name -ne 'Standard') {
+                                if ($script:keys -and (Test-StopKey)) { $stopReason = 'per Taste'; break }
+                                if ($RecoveryPointMaxMinutes -gt 0 -and $total.Elapsed.TotalMinutes -ge $RecoveryPointMaxMinutes) { $stopReason = 'Zeitgrenze erreicht'; break }
+                            }
                             $watch = [Diagnostics.Stopwatch]::StartNew()
                             try {
                                 $all = @(& $source.Block $e.DS | Where-Object { $null -ne $_ })
@@ -532,8 +543,8 @@ try {
                                         $propWatch = [Diagnostics.Stopwatch]::StartNew()
                                         $null = $sorted[0].$name
                                         $pending['44_recoverypoint_eigenschaften_dauer.csv'].Add([pscustomobject][ordered]@{
-                                                Art          = $sampleKey
-                                                Eigenschaft  = $name
+                                                Art           = $sampleKey
+                                                Eigenschaft   = $name
                                                 Millisekunden = [Math]::Round($propWatch.Elapsed.TotalMilliseconds, 1)
                                             })
                                     }
@@ -599,7 +610,15 @@ try {
                     $script:problems.Add("Recovery Points nach $n von $($dsEntries.Count) Datenquellen beendet ($stopReason), Teilergebnis")
                 }
                 foreach ($file in @($pending.Keys)) {
-                    if ($pending[$file].Count -gt 0) { $script:problems.Add("$file unvollstaendig: $($pending[$file].Count) Zeilen nicht geschrieben") }
+                    if ($pending[$file].Count -gt 0) {
+                        # Still locked (e.g. open in Excel): keep the rows in a separate file.
+                        $rest = $file -replace '\.csv$', '_rest.csv'
+                        try {
+                            Save-Csv $rest $pending[$file].ToArray()
+                            $script:problems.Add("$file unvollstaendig, restliche $($pending[$file].Count) Zeilen in $rest")
+                        }
+                        catch { $script:problems.Add("$file unvollstaendig: $($pending[$file].Count) Zeilen nicht geschrieben ($($_.Exception.Message))") }
+                    }
                     elseif (-not (Test-Path (Join-Path $outDir $file))) { Save-Csv $file @() }
                 }
                 if ($samples.Count -gt 0) {
@@ -645,10 +664,10 @@ finally {
         Write-Host ''
         Write-Host 'Bitte diese Datei zurueckschicken:' -ForegroundColor Green
         Write-Host "  $zipPath" -ForegroundColor Yellow
-        Start-Process -FilePath explorer.exe -ArgumentList "/select,`"$zipPath`""
+        try { Start-Process -FilePath explorer.exe -ArgumentList "/select,`"$zipPath`"" } catch { Write-Verbose $_.Exception.Message }
     }
     else {
-        Start-Process -FilePath explorer.exe -ArgumentList "`"$outDir`""
+        try { Start-Process -FilePath explorer.exe -ArgumentList "`"$outDir`"" } catch { Write-Verbose $_.Exception.Message }
     }
 
     if ($script:problems.Count -gt 0) {
