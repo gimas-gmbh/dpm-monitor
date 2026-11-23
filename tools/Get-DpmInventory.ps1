@@ -11,8 +11,11 @@
     Die Ausgabe enthaelt Server- und Datenquellennamen des Kunden, aber keine Kennwoerter.
 
     Die Recovery Points kommen zuletzt und koennen bei vielen Datenquellen lange dauern.
-    Schneller Lauf ohne sie (in einer PowerShell):
+    Sie werden nach jeder Datenquelle gespeichert. Strg+C, Q oder Esc beenden den Schritt nach der
+    aktuellen Datenquelle, danach entsteht die ZIP. Schneller Lauf ohne sie (in einer PowerShell):
       powershell.exe -ExecutionPolicy Bypass -File Get-DpmInventory.ps1 -SkipRecoveryPoints
+    Mit Zeitgrenze, z. B. 30 Minuten:
+      powershell.exe -ExecutionPolicy Bypass -File Get-DpmInventory.ps1 -RecoveryPointMaxMinutes 30
 #>
 # AsyncTimeoutSeconds is used inside an Invoke-Step script block.
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'AsyncTimeoutSeconds')]
@@ -22,6 +25,8 @@ param(
     [int]$RecoveryPointsPerDatasource = 30,
     # Recovery Points ganz auslassen (schneller Lauf; dauert bei vielen Datenquellen sonst lange)
     [switch]$SkipRecoveryPoints,
+    # Recovery Points nach so vielen Minuten beenden (0 = ohne Grenze)
+    [int]$RecoveryPointMaxMinutes = 0,
     # Wie lange maximal auf das asynchrone Nachladen der Datasource-Eigenschaften gewartet wird
     [int]$AsyncTimeoutSeconds = 90
 )
@@ -55,6 +60,18 @@ New-Item -ItemType Directory -Path $outDir | Out-Null
 
 $transcriptPath = Join-Path $outDir '00_konsole.log'
 Start-Transcript -Path $transcriptPath | Out-Null
+
+# Ctrl+C would end the script without saving or zipping: in Windows PowerShell 5.1
+# finally blocks do not run reliably then. So Ctrl+C is read as a key for the whole
+# run; the recovery point step checks it (with Q and Esc) between data sources.
+$script:keys = $false
+$script:oldTreat = $false
+try {
+    $script:oldTreat = [Console]::TreatControlCAsInput
+    [Console]::TreatControlCAsInput = $true
+    $script:keys = $true
+}
+catch { Write-Verbose "Keine Konsole fuer Tastenabfrage: $($_.Exception.Message)" }
 
 $script:problems = New-Object System.Collections.Generic.List[string]
 
@@ -399,9 +416,9 @@ try {
     elseif ($dsEntries.Count -gt 0) {
         Invoke-Step "Recovery Points lesen (je Datenquelle und Speicherort die letzten $RecoveryPointsPerDatasource)" {
             $samples = @{}   # one sample recovery point per type, source and storage location
-            # Only these properties are read. Others (e.g. FileSpecifications, PhysicalPath,
-            # ReferencedROList, DataSource of Hyper-V points) are loaded from DPM on access
-            # and made the step take minutes per data source.
+            # Only these properties are read. Reading all of them made Hyper-V data sources take
+            # minutes, presumably because some (e.g. FileSpecifications, PhysicalPath,
+            # ReferencedROList, DataSource) are loaded from DPM on access.
             $rpProperties = @(
                 'RepresentedPointInTime', 'BackupTime', 'UtcRepresentedPointInTime', 'IsIncremental',
                 'DataLocation', 'Location', 'IsRecoverable', 'IsValidRecoverySource', 'HasFastRecoveryMarker',
@@ -421,24 +438,35 @@ try {
                     Write-Host "     $($name): $decision"
                 }
             }
-            # Ctrl+C would end the script without saving or zipping (finally blocks do not run
-            # reliably in Windows PowerShell 5.1). So it is read as a key here and ends the step
-            # after the current data source. The results are written after each data source anyway.
-            $keys = $false
-            $oldTreat = $false
-            try {
-                $oldTreat = [Console]::TreatControlCAsInput
-                [Console]::TreatControlCAsInput = $true
-                $keys = $true
+            if ($script:keys) {
                 Write-Host '   Beenden mit Strg+C, Q oder Esc: nach der aktuellen Datenquelle, danach entsteht die ZIP.'
             }
-            catch { Write-Verbose "Keine Konsole fuer Tastenabfrage: $($_.Exception.Message)" }
+            Write-Host '   Ergebnisse werden nach jeder Datenquelle gespeichert; auch nach Schliessen des Fensters bleiben sie im Ordner.'
+            if ($RecoveryPointMaxMinutes -gt 0) { Write-Host "   Zeitgrenze: $RecoveryPointMaxMinutes min" }
+            # Rows not yet written (e.g. because a CSV was open in Excel); retried after each data source.
+            $pending = @{
+                '40_recoverypoints.csv'            = New-Object System.Collections.Generic.List[object]
+                '42_recoverypoints_uebersicht.csv' = New-Object System.Collections.Generic.List[object]
+                '43_recoverypoints_abrufdauer.csv' = New-Object System.Collections.Generic.List[object]
+                '44_recoverypoint_eigenschaften_dauer.csv' = New-Object System.Collections.Generic.List[object]
+            }
+            $flush = {
+                foreach ($file in @($pending.Keys)) {
+                    if ($pending[$file].Count -eq 0) { continue }
+                    try {
+                        Add-Csv $file $pending[$file].ToArray()
+                        $pending[$file].Clear()
+                    }
+                    catch { Write-Warning "$file konnte nicht geschrieben werden (geoeffnet?), neuer Versuch spaeter: $($_.Exception.Message)" }
+                }
+            }
             $total = [Diagnostics.Stopwatch]::StartNew()
             $n = 0
-            $stopped = $false
+            $stopReason = $null
             try {
                 foreach ($e in $dsEntries) {
-                    if ($keys -and (Test-StopKey)) { $stopped = $true; break }
+                    if ($script:keys -and (Test-StopKey)) { $stopReason = 'per Taste'; break }
+                    if ($RecoveryPointMaxMinutes -gt 0 -and $total.Elapsed.TotalMinutes -ge $RecoveryPointMaxMinutes) { $stopReason = 'Zeitgrenze erreicht'; break }
                     $n++
                     $remaining = ''
                     if ($n -gt 1) {
@@ -459,75 +487,93 @@ try {
                     $seconds = @{}
                     $processing = New-Object Diagnostics.Stopwatch
                     $points = 0
-                    $dsRows = New-Object System.Collections.Generic.List[object]
-                    $dsSummary = New-Object System.Collections.Generic.List[object]
-                    foreach ($source in $sources) {
-                        $watch = [Diagnostics.Stopwatch]::StartNew()
-                        try {
-                            $all = @(& $source.Block $e.DS | Where-Object { $null -ne $_ })
-                            $seconds[$source.Name] = [Math]::Round($watch.Elapsed.TotalSeconds, 1)
-                        }
-                        catch {
-                            $seconds[$source.Name] = [Math]::Round($watch.Elapsed.TotalSeconds, 1)
-                            if ($source.Name -eq 'Standard') {
-                                $msg = "Recovery Points fuer $($e.DS.LogicalPath): $($_.Exception.Message)"
-                                Write-Warning $msg
-                                $script:problems.Add($msg)
+                    # One data source must not end the step: errors are logged and the next one follows.
+                    try {
+                        foreach ($source in $sources) {
+                            if ($source.Name -ne 'Standard' -and $script:keys -and (Test-StopKey)) { $stopReason = 'per Taste'; break }
+                            $watch = [Diagnostics.Stopwatch]::StartNew()
+                            try {
+                                $all = @(& $source.Block $e.DS | Where-Object { $null -ne $_ })
+                                $seconds[$source.Name] = [Math]::Round($watch.Elapsed.TotalSeconds, 1)
                             }
-                            continue
-                        }
-                        $processing.Start()
-                        $points += $all.Count
-                        # Group by storage location and IsIncremental, so that rare tape, online or
-                        # express full points are not pushed out by frequent disk or synchronisation points.
-                        $groups = $all | Group-Object { "Location=$($_.Location); IsIncremental=$($_.IsIncremental)" }
-                        foreach ($g in $groups) {
-                            $sorted = @($g.Group | Sort-Object RepresentedPointInTime -Descending)
-                            $dsSummary.Add([pscustomobject][ordered]@{
-                                    ProtectionGroup      = $e.PG
-                                    ProductionServerName = $e.DS.ProductionServerName
-                                    LogicalPath          = $e.DS.LogicalPath
-                                    Type                 = $typeName
-                                    Quelle               = $source.Name
-                                    Speicherort          = $g.Name
-                                    Anzahl               = $sorted.Count
-                                    Neuester             = Format-Time $sorted[0].RepresentedPointInTime
-                                    Aeltester            = Format-Time $sorted[-1].RepresentedPointInTime
-                                })
-                            $sampleKey = "$typeName | $($source.Name) | $($g.Name)"
-                            if (-not $samples.ContainsKey($sampleKey)) { $samples[$sampleKey] = $sorted[0] }
-                            foreach ($rp in ($sorted | Select-Object -First $RecoveryPointsPerDatasource)) {
-                                $time = $null
-                                if ($rp.RepresentedPointInTime) { $time = [datetime]$rp.RepresentedPointInTime }
-                                $dayOfWeek = $null
-                                if ($time) { $dayOfWeek = $time.DayOfWeek.ToString() }
-                                $row = [ordered]@{
-                                    ProtectionGroup      = $e.PG
-                                    ProductionServerName = $e.DS.ProductionServerName
-                                    LogicalPath          = $e.DS.LogicalPath
-                                    Type                 = $typeName
-                                    Quelle               = $source.Name
-                                    Speicherort          = $g.Name
-                                    Zeitpunkt            = Format-Time $time
-                                    Wochentag            = $dayOfWeek
+                            catch {
+                                $seconds[$source.Name] = [Math]::Round($watch.Elapsed.TotalSeconds, 1)
+                                if ($source.Name -eq 'Standard') {
+                                    $msg = "Recovery Points fuer $($e.DS.LogicalPath): $($_.Exception.Message)"
+                                    Write-Warning $msg
+                                    $script:problems.Add($msg)
                                 }
-                                # Same columns in every row: the CSV is appended per data source.
-                                foreach ($name in $rpProperties) {
-                                    $v = $null
-                                    if ($rp.PSObject.Properties[$name]) { $v = $rp.$name }
-                                    if ($v -is [datetime]) { $v = Format-Time $v }
-                                    elseif ($null -ne $v -and -not ($v -is [string] -or $v -is [ValueType])) { $v = "$v" }
-                                    $row["RP_$name"] = $v
-                                }
-                                $dsRows.Add([pscustomobject]$row)
+                                continue
                             }
+                            $processing.Start()
+                            $points += $all.Count
+                            # Group by storage location and IsIncremental, so that rare tape, online or
+                            # express full points are not pushed out by frequent disk or synchronisation points.
+                            $groups = $all | Group-Object { "Location=$($_.Location); IsIncremental=$($_.IsIncremental)" }
+                            foreach ($g in $groups) {
+                                $sorted = @($g.Group | Sort-Object RepresentedPointInTime -Descending)
+                                $pending['42_recoverypoints_uebersicht.csv'].Add([pscustomobject][ordered]@{
+                                        ProtectionGroup      = $e.PG
+                                        ProductionServerName = $e.DS.ProductionServerName
+                                        LogicalPath          = $e.DS.LogicalPath
+                                        Type                 = $typeName
+                                        Quelle               = $source.Name
+                                        Speicherort          = $g.Name
+                                        Anzahl               = $sorted.Count
+                                        Neuester             = Format-Time $sorted[0].RepresentedPointInTime
+                                        Aeltester            = Format-Time $sorted[-1].RepresentedPointInTime
+                                    })
+                                $sampleKey = "$typeName | $($source.Name) | $($g.Name)"
+                                if (-not $samples.ContainsKey($sampleKey)) {
+                                    $samples[$sampleKey] = $sorted[0]
+                                    # How long each property takes to read, once per kind of point.
+                                    foreach ($name in $rpProperties) {
+                                        if (-not $sorted[0].PSObject.Properties[$name]) { continue }
+                                        $propWatch = [Diagnostics.Stopwatch]::StartNew()
+                                        $null = $sorted[0].$name
+                                        $pending['44_recoverypoint_eigenschaften_dauer.csv'].Add([pscustomobject][ordered]@{
+                                                Art          = $sampleKey
+                                                Eigenschaft  = $name
+                                                Millisekunden = [Math]::Round($propWatch.Elapsed.TotalMilliseconds, 1)
+                                            })
+                                    }
+                                }
+                                foreach ($rp in ($sorted | Select-Object -First $RecoveryPointsPerDatasource)) {
+                                    $time = $null
+                                    if ($rp.RepresentedPointInTime) { $time = [datetime]$rp.RepresentedPointInTime }
+                                    $dayOfWeek = $null
+                                    if ($time) { $dayOfWeek = $time.DayOfWeek.ToString() }
+                                    $row = [ordered]@{
+                                        ProtectionGroup      = $e.PG
+                                        ProductionServerName = $e.DS.ProductionServerName
+                                        LogicalPath          = $e.DS.LogicalPath
+                                        Type                 = $typeName
+                                        Quelle               = $source.Name
+                                        Speicherort          = $g.Name
+                                        Zeitpunkt            = Format-Time $time
+                                        Wochentag            = $dayOfWeek
+                                    }
+                                    # Same columns in every row: the CSV is appended per data source.
+                                    foreach ($name in $rpProperties) {
+                                        $v = $null
+                                        if ($rp.PSObject.Properties[$name]) { $v = $rp.$name }
+                                        if ($v -is [datetime]) { $v = Format-Time $v }
+                                        elseif ($null -ne $v -and -not ($v -is [string] -or $v -is [ValueType])) { $v = "$v" }
+                                        $row["RP_$name"] = $v
+                                    }
+                                    $pending['40_recoverypoints.csv'].Add([pscustomobject]$row)
+                                }
+                            }
+                            $processing.Stop()
                         }
-                        $processing.Stop()
                     }
-                    # Written right away, so an abort or a closed window keeps what was read.
-                    Add-Csv '40_recoverypoints.csv' $dsRows.ToArray()
-                    Add-Csv '42_recoverypoints_uebersicht.csv' $dsSummary.ToArray()
-                    Add-Csv '43_recoverypoints_abrufdauer.csv' @([pscustomobject][ordered]@{
+                    catch {
+                        $processing.Stop()
+                        $msg = "Recovery Points fuer $($e.DS.LogicalPath) unvollstaendig: $($_.Exception.Message)"
+                        Write-Warning $msg
+                        $script:problems.Add($msg)
+                    }
+                    $pending['43_recoverypoints_abrufdauer.csv'].Add([pscustomobject][ordered]@{
                             ProtectionGroup      = $e.PG
                             ProductionServerName = $e.DS.ProductionServerName
                             LogicalPath          = $e.DS.LogicalPath
@@ -537,26 +583,33 @@ try {
                             VerarbeitungSekunden = [Math]::Round($processing.Elapsed.TotalSeconds, 1)
                             Punkte               = $points
                         })
+                    # Written right away, so an abort or a closed window keeps what was read.
+                    & $flush
                     Write-Host ('          Abruf {0:N1} s, Verarbeitung {1:N1} s, {2} Punkte' -f
                         (($seconds.Values | Measure-Object -Sum).Sum), $processing.Elapsed.TotalSeconds, $points)
+                    if ($stopReason) { break }
                 }
             }
             finally {
-                if ($keys) { [Console]::TreatControlCAsInput = $oldTreat }
-            }
-            Write-Progress -Activity 'Recovery Points lesen' -Completed
-            Write-Host ('   Dauer insgesamt: {0:N1} min' -f $total.Elapsed.TotalMinutes)
-            if ($stopped) {
-                Write-Host "   Beendet nach $n von $($dsEntries.Count) Datenquellen." -ForegroundColor Yellow
-                $script:problems.Add("Recovery Points nach $n von $($dsEntries.Count) Datenquellen beendet (Teilergebnis)")
-            }
-            if ($samples.Count -gt 0) {
-                Save-Text '41_recoverypoint_beispiele.txt' ($samples.Keys | Sort-Object | ForEach-Object {
-                    "===== $_ ====="
-                    # Get-Member reads no values; Format-List only the cheap properties.
-                    $samples[$_] | Format-List -Property $rpProperties | Out-String -Width 4096
-                    $samples[$_] | Get-Member | Out-String -Width 4096
-                })
+                & $flush
+                Write-Progress -Activity 'Recovery Points lesen' -Completed
+                Write-Host ('   Dauer insgesamt: {0:N1} min' -f $total.Elapsed.TotalMinutes)
+                if ($stopReason) {
+                    Write-Host "   Beendet nach $n von $($dsEntries.Count) Datenquellen ($stopReason)." -ForegroundColor Yellow
+                    $script:problems.Add("Recovery Points nach $n von $($dsEntries.Count) Datenquellen beendet ($stopReason), Teilergebnis")
+                }
+                foreach ($file in @($pending.Keys)) {
+                    if ($pending[$file].Count -gt 0) { $script:problems.Add("$file unvollstaendig: $($pending[$file].Count) Zeilen nicht geschrieben") }
+                    elseif (-not (Test-Path (Join-Path $outDir $file))) { Save-Csv $file @() }
+                }
+                if ($samples.Count -gt 0) {
+                    Save-Text '41_recoverypoint_beispiele.txt' ($samples.Keys | Sort-Object | ForEach-Object {
+                        "===== $_ ====="
+                        # Get-Member reads no values; Format-List only the listed properties.
+                        $samples[$_] | Format-List -Property $rpProperties | Out-String -Width 4096
+                        $samples[$_] | Get-Member | Out-String -Width 4096
+                    })
+                }
             }
         }
     }
@@ -604,5 +657,12 @@ finally {
     }
 
     Write-Host ''
+    if ($script:keys) {
+        try {
+            [Console]::TreatControlCAsInput = $script:oldTreat
+            $Host.UI.RawUI.FlushInputBuffer()   # keys pressed during the run must not answer Read-Host
+        }
+        catch { Write-Verbose $_.Exception.Message }
+    }
     Read-Host 'Fertig. Enter druecken zum Schliessen'
 }
