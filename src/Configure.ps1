@@ -81,6 +81,7 @@ $script:StatusColor = @{
     Failed   = [Drawing.Color]::FromArgb(250, 220, 220)
     Excluded = [Drawing.Color]::FromArgb(235, 235, 235)
 }
+$script:DatasourceColumns = @(@('Status', 90), @('Schutzgruppe', 150), @('Server', 190), @('Pfad', 200), @('Letzter Punkt', 110), @('Hinweis', 420))
 $script:Presets = @('Täglich', 'Werktags (Mo–Fr)', 'Wöchentlich', 'Eigene Wochentage', 'Höchstalter in Stunden')
 $script:DayOrder = @('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')
 $script:DayShort = @{ Monday = 'Mo'; Tuesday = 'Di'; Wednesday = 'Mi'; Thursday = 'Do'; Friday = 'Fr'; Saturday = 'Sa'; Sunday = 'So' }
@@ -444,16 +445,39 @@ function Update-StatusLine {
     $Ctx.StatusLabel.Text = $parts -join '  ·  '
 }
 
-function Update-Evaluation {
+# Identifies a data source across re-evaluations (e.g. to keep the selection).
+function Get-ItemKey {
+    param($Item)
+    ('{0}|{1}|{2}' -f $Item.ProtectionGroup, $Item.ProductionServerName, $Item.LogicalPath).ToLowerInvariant()
+}
+
+# Fills the data source list from the current evaluation, sorted by the
+# column the user clicked last (status by default). Keeps the selection.
+function Update-DatasourceList {
     param($Ctx)
-    $Ctx.DatasourceList.BeginUpdate()
+    $list = $Ctx.DatasourceList
+    $selected = @{}
+    foreach ($r in $list.SelectedItems) { $selected[(Get-ItemKey $r.Tag)] = $true }
+    $order = @{ Failed = 0; Warning = 1; Ok = 2; Excluded = 3 }
+    $primary = switch ($Ctx.SortColumn) {
+        1 { 'ProtectionGroup' }
+        2 { 'ProductionServerName' }
+        3 { 'LogicalPath' }
+        4 { { if ($null -eq $_.LatestRecoveryPoint) { [datetime]::MinValue } else { [datetime]$_.LatestRecoveryPoint } } }
+        5 { 'Reason' }
+        default { { $order[$_.Status] } }
+    }
+    for ($c = 0; $c -lt $list.Columns.Count; $c++) {
+        $text = $script:DatasourceColumns[$c][0]
+        if ($c -eq $Ctx.SortColumn) { $text += $(if ($Ctx.SortDescending) { ' ▼' } else { ' ▲' }) }
+        $list.Columns[$c].Text = $text
+    }
+    $items = @($Ctx.Evaluation.Items) | Sort-Object -Property @{ Expression = $primary; Descending = [bool]$Ctx.SortDescending },
+    @{ Expression = 'ProtectionGroup' }, @{ Expression = 'LogicalPath' }
+    $list.BeginUpdate()
     try {
-        $Ctx.DatasourceList.Items.Clear()
-        if ($null -eq $Ctx.State) { return }
-        $now = if ($Ctx.FixedNow) { $Ctx.FixedNow } else { [datetime]::UtcNow }
-        $Ctx.Evaluation = Invoke-DpmMonitorEvaluation -State $Ctx.State -Config $Ctx.Config -Now $now
-        $order = @{ Failed = 0; Warning = 1; Ok = 2; Excluded = 3 }
-        foreach ($i in ($Ctx.Evaluation.Items | Sort-Object { $order[$_.Status] }, ProtectionGroup, LogicalPath)) {
+        $list.Items.Clear()
+        foreach ($i in $items) {
             $row = New-Object Windows.Forms.ListViewItem($script:StatusText[$i.Status])
             [void]$row.SubItems.Add([string]$i.ProtectionGroup)
             [void]$row.SubItems.Add([string]$i.ProductionServerName)
@@ -462,10 +486,22 @@ function Update-Evaluation {
             [void]$row.SubItems.Add([string]$i.Reason)
             $row.BackColor = $script:StatusColor[$i.Status]
             $row.Tag = $i
-            [void]$Ctx.DatasourceList.Items.Add($row)
+            [void]$list.Items.Add($row)
+            if ($selected.ContainsKey((Get-ItemKey $i))) { $row.Selected = $true }
         }
     }
-    finally { $Ctx.DatasourceList.EndUpdate() }
+    finally { $list.EndUpdate() }
+}
+
+function Update-Evaluation {
+    param($Ctx)
+    if ($null -eq $Ctx.State) {
+        $Ctx.DatasourceList.Items.Clear()
+        return
+    }
+    $now = if ($Ctx.FixedNow) { $Ctx.FixedNow } else { [datetime]::UtcNow }
+    $Ctx.Evaluation = Invoke-DpmMonitorEvaluation -State $Ctx.State -Config $Ctx.Config -Now $now
+    Update-DatasourceList $Ctx
     $failed = @($Ctx.Evaluation.Items | Where-Object Status -eq 'Failed').Count
     $Ctx.SummaryLabel.Text = "Bewertung mit der aktuellen (auch ungespeicherten) Konfiguration: $(@($Ctx.Evaluation.Items).Count) Datenquellen, $failed mit Fehler."
 }
@@ -605,7 +641,7 @@ function Show-MainForm {
     $tabDs = New-Object Windows.Forms.TabPage('Datenquellen')
     $Ctx.SummaryLabel = New-Control Label @{ Dock = 'Top'; Height = (Get-Px 26); Padding = (New-ScaledPadding 4 6 4 0); Text = 'Noch nicht geladen.' }
     $list = New-Control ListView @{ View = 'Details'; FullRowSelect = $true; MultiSelect = $true; Dock = 'Fill'; HideSelection = $false }
-    foreach ($col in @(@('Status', 90), @('Schutzgruppe', 150), @('Server', 190), @('Pfad', 200), @('Letzter Punkt', 110), @('Hinweis', 420))) {
+    foreach ($col in $script:DatasourceColumns) {
         [void]$list.Columns.Add($col[0], (Get-Px $col[1]))
     }
     $Ctx.DatasourceList = $list
@@ -685,6 +721,15 @@ function Show-MainForm {
     # --- events ---
     $selected = { @($list.SelectedItems | ForEach-Object { $_.Tag }) }
     $reload.Add_Click({ Update-DatasourceState $Ctx })
+    # Click on a column header: sort by it; a second click reverses the order.
+    $list.Add_ColumnClick({
+            if ($Ctx.SortColumn -eq $_.Column) { $Ctx.SortDescending = -not $Ctx.SortDescending }
+            else {
+                $Ctx.SortColumn = $_.Column
+                $Ctx.SortDescending = $false
+            }
+            if ($Ctx.Evaluation) { Update-DatasourceList $Ctx }
+        })
     $Ctx.LoadTimer.Add_Tick({ Complete-DatasourceStateLoad $Ctx })
     $form.Add_FormClosed({
             $Ctx.LoadTimer.Stop()
@@ -803,6 +848,8 @@ function New-Context {
         FallbackCheck  = $null
         FallbackInput  = $null
         ReloadButton   = $null
+        SortColumn     = 0       # data source list: column to sort by
+        SortDescending = $false
         LoadTimer      = $null   # polls the background read of DPM
         Loader         = $null   # running background read
     }
