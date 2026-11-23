@@ -405,6 +405,11 @@ function Get-DpmMonitorRuleSpecificity {
 
 function Get-DpmMonitorRuleLabel {
     param([object]$Rule)
+    $server = [string](Get-ObjectPropertyValue $Rule 'ProductionServerName')
+    if ($server -ne '' -and [string](Get-ObjectPropertyValue $Rule 'LogicalPath') -eq '') {
+        # Server within a protection group: say so, it could be mistaken for a data source.
+        return 'Server „{0}“ in Schutzgruppe „{1}“' -f $server, [string](Get-ObjectPropertyValue $Rule 'ProtectionGroup')
+    }
     $parts = foreach ($n in 'ProtectionGroup', 'ProductionServerName', 'LogicalPath') {
         $v = [string](Get-ObjectPropertyValue $Rule $n)
         if ($v -ne '') { $v }

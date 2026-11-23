@@ -273,6 +273,11 @@ Describe 'Invoke-DpmMonitorEvaluation' {
             $e = Invoke-DpmMonitorEvaluation -State $state -Config (New-TestConfig @{ Exclusions = @(New-Exclusion); Overrides = @($ov) }) -Now $now -TimeZone $Tz
             $e.Notices.Count | Should -Be 0
         }
+        It 'names a server within a protection group clearly in notices' {
+            $server = [pscustomobject]@{ ProtectionGroup = 'PG SQL'; ProductionServerName = 'srv-sql01.example.local'; Reason = 'Server wird abgelöst'; Until = '2026-11-19' }
+            $e = Invoke-DpmMonitorEvaluation -State $state -Config (New-TestConfig @{ Exclusions = @($server) }) -Now $now -TimeZone $Tz
+            $e.Notices | Should -Be @('Ausnahme abgelaufen am 2026-11-19, wird wieder überwacht: Server „srv-sql01.example.local“ in Schutzgruppe „PG SQL“')
+        }
         It 'reports exclusions that match nothing' {
             $cfg = New-TestConfig @{ Exclusions = @((New-Exclusion -Path 'SRV-SQL01\gone')) }
             $e = Invoke-DpmMonitorEvaluation -State $state -Config $cfg -Now $now -TimeZone $Tz
