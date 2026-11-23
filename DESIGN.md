@@ -73,6 +73,8 @@ der Dienst hängt oder die Prüfung selbst nicht mehr läuft.
   die Schrift wird unscharf. Abhilfe: `SetProcessDPIAware()` vor dem ersten Fenster und Pixelmaße mit
   dem DPI-Faktor skalieren (Schriften in Punkt skalieren selbst).
 - In der Windows Sandbox lässt sich `Microsoft.PowerShell.Archive` (`Expand-Archive`) nicht laden.
+- `Add-Type` mit C#-Quelltext (auch `-MemberDefinition`) startet in Windows PowerShell 5.1 bei jedem Aufruf den
+  C#-Compiler; das kostet auf Servern Sekunden. Für einzelne P/Invokes `Reflection.Emit` nutzen.
 - Windows PowerShell 5.1 macht Stderr nativer Programme bei `2>&1` zu Fehlerobjekten; mit
   `$ErrorActionPreference = 'Stop'` bricht das ab. Und `powershell.exe -File` ohne `exit` kann den
   `$LASTEXITCODE` eines Kindprozesses als eigenen Exit-Code liefern. Skripte enden daher mit explizitem `exit`.
@@ -114,19 +116,42 @@ deutsche Oberfläche, 26 bzw. 139 Datenquellen, 2 bzw. 3 Schutzgruppen; Stand 20
   `-LongTerm Tape` liefert `ArchiveSchedule` (`Frequency`, `Interval`, `WeekDay(s)`, `RelativeWeekDay`,
   `RelativeInterval`, `ScheduleTime` mit Datum als Anker, `Generation`, `Vault`), gesehen monatlich am 1.
 
-*Welcher Zeitplan erzeugt die Wiederherstellungspunkte* (vorläufig, abgeleitet aus `LatestRecoveryPoint`;
-die Liste der einzelnen Punkte fehlte wegen eines Skriptfehlers und wird mit einem zweiten Lauf nachgeholt)
+*Welcher Zeitplan erzeugt die Wiederherstellungspunkte* (zuerst abgeleitet aus `LatestRecoveryPoint`, am
+2026-11-23 auf dem Server mit 139 Datenquellen mit der Liste der einzelnen Punkte bestätigt)
 - SQL: Jede Datenbank bekommt einen Punkt zur Schnellen vollständigen Sicherung. Ein Teil der Datenbanken
-  (vermutlich Wiederherstellungsmodell „vollständig“) bekommt zusätzlich bei jeder Synchronisation einen Punkt;
-  deren letzter Punkt lag genau auf dem Synchronisationsraster (stündlich bzw. alle 4 h).
-  Verlässlicher Takt für alle SQL-Datenbanken ist damit der `FullSchedule`.
+  (vermutlich Wiederherstellungsmodell „vollständig“, 72 von 109 gültigen) bekommt zusätzlich bei jeder
+  Synchronisation einen Punkt, genau auf dem Synchronisationsraster (stündlich bzw. alle 4 h).
+  Verlässlicher Takt für alle SQL-Datenbanken ist damit der `FullSchedule`: Jede gültige Datenquelle hatte im
+  erfassten Zeitraum an jedem Tag einen solchen Punkt, ohne Lücke.
+- Unterscheidbar am Punkt selbst: `IsIncremental` = `False` bei der Schnellen vollständigen Sicherung,
+  `True` bei Synchronisationspunkten.
 - Hyper-V: Punkt zur Schnellen vollständigen Sicherung.
 - Systemschutz (Bare Metal/Systemstatus): Punkt zur Schnellen vollständigen Sicherung, auch in einer Schutzgruppe,
   die zusätzlich einen Schattenkopie-Zeitplan hat.
 - Volume (Dateidaten): Punkt zur Schattenkopie-Zeit.
 - Die Punkte einer Schutzgruppe entstehen nacheinander: bis ca. 60 min nach dem geplanten Start bei rund
-  70 Datenquellen. Der geplante Puffer von 3 h reicht dafür.
-- Bei allen Datenquellen war `LatestRecoveryPoint` = `LatestDiskRecoveryPoint`, auch mit Online- oder Bandsicherung.
+  70 Datenquellen; bei rund 110 Datenquellen meist 60–80 min, in 30 Tagen höchstens gut 2 h.
+  Der geplante Puffer von 3 h reicht dafür.
+- `LatestRecoveryPoint` ist der neueste Disk-Punkt, nie ein Bandpunkt (Bandpunkte sind Kopien älterer
+  Disk-Punkte). Im ersten Lauf war `LatestDiskRecoveryPoint` gleich, im zweiten überall `0001-01-01`
+  (ebenso `TotalDiskRecoveryPoints` = 0). Die `…Disk…`-Felder sind also unzuverlässig; die Prüfung nutzt sie nicht.
+
+*Wiederherstellungspunkte im Detail* (`Get-DPMRecoveryPoint`, DPM 2022)
+- Speicherort in `Location`/`DataLocation`: `Disk` oder `Media` (Band). Online-Punkte kamen nicht vor:
+  keine Schutzgruppe mit Online-Zeitplan (`-LongTerm Online` leer), `-Online` lieferte nichts.
+- Bandpunkte entstehen hier monatlich am 1. (monatlicher Band-Zeitplan am 1. um 23:00). Ihr
+  `RepresentedPointInTime` ist der Zeitpunkt des kopierten Disk-Punkts, also vor der Bandsicherung.
+  Ohne aktuellen Bandpunkt waren genau die 13 inkonsistenten, seit Langem nicht mehr gesicherten Datenquellen.
+- `RPExpirtyTime` (sic) ist immer `0001-01-01`, `RetentionType` leer.
+- Laufzeit: 139 Datenquellen mit je einem Aufruf ohne und einem mit `-Online` brauchten knapp 3 h (rund 75 s pro
+  Datenquelle). Für die Prüfung alle 4 h ist `Get-DPMRecoveryPoint` damit zu langsam; eine Bandüberwachung
+  muss anders oder seltener prüfen. Wie sich die Zeit auf die beiden Aufrufe verteilt, zeigt der nächste Lauf
+  (`43_recoverypoints_abrufdauer.csv`).
+
+*Alerts* (zweiter Server, Stand 2026-11-23)
+- Offen waren zwei `ShadowCopyFailedAlert` der Stufe Error (unter 1 h offen) und zwei Warnungen
+  (Bandvorrat seit über 260 Tagen, Katalog seit 5 Tagen). Warnungen bleiben also lange offen; nur Error-Alerts
+  mit Schwelle zu zählen passt dazu.
 
 *Asynchrones Nachladen*
 - Das Warten auf `DataSourceChangedEvent` funktioniert: keine `0001-01-01` in `LatestRecoveryPoint` und
@@ -192,3 +217,6 @@ Neue Weggabelungen und Abweichungen von Abschnitt 3 hier eintragen: Datum, Entsc
 | 2026-11-20 | Bis zum Pilot auf einem echten DPM-Server bleibt die Version 0.x; 1.0 nach ein, zwei Wochen Pilot ohne Fehlalarm | Lauf gegen echte DPM-Objekte und der Takt je Datenquellentyp sind noch unbestätigt | Sofort 1.0 |
 | 2026-11-20 | Bestandsaufnahme für den Pilot erweitert: Recovery Points je Speicherort (Disk/Band/online, je Gruppe die neuesten 30, dazu eine Übersicht), Speicher (`Get-DPMDiskStorage`), Alerts strukturiert mit Offen-Dauer | Grundlage für Langzeit- und Speicherüberwachung und für die Frage, ob unaufgelöste Error-Alerts als Fehler zählen sollen (Vorschlag: ab 24 h offen, Ausnahmen gelten) | Diese Überwachungen ohne Daten bauen |
 | 2026-11-20 | Unaufgelöste Error-Alerts zählen als Fehler, wenn sie länger als eine Schwelle offen sind; Ausnahmen gelten auch für sie (Abschnitt 1 nach Rücksprache ergänzt). Schwelle und Umsetzung nach den Pilot-Daten | Dauerprobleme früher sehen, ohne einzelne Ausrutscher zu melden; die typische Offen-Dauer ist noch unbekannt | Jeder Error-Alert sofort als Fehler (widerspricht „einzelner Ausrutscher wird toleriert“); Alerts nur im Bericht |
+| 2026-11-23 | Ausnahmen und abweichende Regeln auch für einen Server innerhalb einer Schutzgruppe (`ProtectionGroup` + `ProductionServerName`, ohne Pfad). Vorrang bei Regeln: Datenquelle vor Server vor Schutzgruppe. Die Oberfläche erlaubt Mehrfachauswahl und legt je Ziel einen Eintrag an (gleicher Grund, gleiches Ablaufdatum). Bei mehreren aktiven Ausnahmen liefert die spezifischste den Grund; eine abgelaufene Ausnahme erscheint nur als Hinweis, wenn keine andere aktive die Datenquelle noch ausnimmt; Regeln für ausgenommene Datenquellen gelten nicht als „passt zu keiner Datenquelle“ | Zwischenebene, wenn ein Server abgelöst wird oder mehrere Datenquellen eines Servers denselben Grund haben; Mehrfachauswahl spart Klicks bei vielen Datenquellen. Schema bleibt 1, ältere Versionen würden solche Einträge ablehnen, ein Downgrade ist aber ohnehin ausgeschlossen | Server über alle Schutzgruppen (unklarer Bezug); ein Eintrag mit Liste von Zielen (komplizierteres Schema, Entfernen einzelner Ziele schwerer) |
+| 2026-11-23 | Bestandsaufnahme: Recovery Points zuletzt lesen, `-Online` nur bei Schutzgruppen mit Online-Zeitplan (oder unbekanntem), Dauer je Datenquelle protokollieren, Teilergebnis bei Abbruch speichern, Schalter `-SkipRecoveryPoints` | Der Schritt dauerte bei 139 Datenquellen sehr lange; die Dauer pro Aufruf zeigt außerdem, ob `Get-DPMRecoveryPoint` für eine spätere Langzeitüberwachung schnell genug ist | Nur eine Stichprobe von Datenquellen lesen (verliert seltene Band-/Online-Punkte) |
+| 2026-11-23 | Oberfläche startet schneller: Neustart mit Administratorrechten vor dem Laden von Modul und WinForms, P/Invoke für DPI ohne C#-Compiler, DPM wird in einem Hintergrund-Runspace gelesen (einer pro Fenster, STA, derselbe Thread für jedes Neuladen) und per Timer übernommen; die Dauer steht in der Zusammenfassung | Start über die Verknüpfung lud alles doppelt; DPM-Modul und Verbindung kosten Sekunden, das Fenster war so lange gesperrt. Kann der Runspace nicht gestartet werden, liest die Oberfläche wie bisher im Vordergrund | Parallele Abfragen je Schutzgruppe (gleiche DPM-Verbindung, kaum Gewinn, mehr Komplexität) |

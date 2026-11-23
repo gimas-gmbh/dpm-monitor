@@ -13,16 +13,42 @@
 param()
 
 $ErrorActionPreference = 'Stop'
+
+# Restart elevated before loading anything: the start menu shortcut starts
+# without administrator rights, and loading twice costs seconds.
+# Dot-sourcing (development tools) skips this.
+if ($MyInvocation.InvocationName -ne '.') {
+    $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        Start-Process -FilePath $powershell -Verb RunAs -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-WindowStyle', 'Hidden', '-File', "`"$PSCommandPath`""
+        )
+        return
+    }
+}
+
 $script:PackagePath = $PSScriptRoot
 Import-Module (Join-Path $script:PackagePath 'DpmMonitor.psm1') -Force
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+
 # Crisp on high-DPI screens (e.g. 4K): without this, Windows stretches the
 # DPI-unaware PowerShell window as a bitmap and the text gets blurry. Fonts
 # are given in points and scale by themselves; pixel sizes use Get-Px.
-if (-not ('DpmMonitorUi.Dpi' -as [type])) {
-    Add-Type -Namespace DpmMonitorUi -Name Dpi -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();'
+# The P/Invoke is built with Reflection.Emit: Add-Type -MemberDefinition would
+# start the C# compiler on every launch, which takes seconds on a server.
+function Set-ProcessDpiAware {
+    $name = New-Object Reflection.AssemblyName('DpmMonitorUiDpi')
+    $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly($name, [Reflection.Emit.AssemblyBuilderAccess]::Run)
+    $type = $assembly.DefineDynamicModule('DpmMonitorUiDpi').DefineType('DpmMonitorUiDpi.Dpi', 'Public, Class')
+    $method = $type.DefinePInvokeMethod('SetProcessDPIAware', 'user32.dll',
+        [Reflection.MethodAttributes]'Public, Static, PinvokeImpl', [Reflection.CallingConventions]::Standard,
+        [bool], [Type[]]@(), [Runtime.InteropServices.CallingConvention]::Winapi, [Runtime.InteropServices.CharSet]::Auto)
+    $method.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
+    [void]$type.CreateType().GetMethod('SetProcessDPIAware').Invoke($null, $null)
 }
-[void][DpmMonitorUi.Dpi]::SetProcessDPIAware()
+# Without DPI awareness the window is only blurry, so a failure must not stop the UI.
+try { Set-ProcessDpiAware } catch { Write-Verbose "SetProcessDPIAware fehlgeschlagen: $($_.Exception.Message)" }
 $graphics = [Drawing.Graphics]::FromHwnd([IntPtr]::Zero)
 $script:Scale = $graphics.DpiX / 96
 $graphics.Dispose()
@@ -55,6 +81,7 @@ $script:StatusColor = @{
     Failed   = [Drawing.Color]::FromArgb(250, 220, 220)
     Excluded = [Drawing.Color]::FromArgb(235, 235, 235)
 }
+$script:DatasourceColumns = @(@('Status', 90), @('Schutzgruppe', 150), @('Server', 190), @('Pfad', 200), @('Letzter Punkt', 110), @('Hinweis', 420))
 $script:Presets = @('Täglich', 'Werktags (Mo–Fr)', 'Wöchentlich', 'Eigene Wochentage', 'Höchstalter in Stunden')
 $script:DayOrder = @('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')
 $script:DayShort = @{ Monday = 'Mo'; Tuesday = 'Di'; Wednesday = 'Mi'; Thursday = 'Do'; Friday = 'Fr'; Saturday = 'Sa'; Sunday = 'So' }
@@ -129,9 +156,16 @@ function Get-ItemLabel {
 
 function Get-RuleTargetText {
     param($Rule)
-    $pg = [string]$Rule.ProtectionGroup
-    $path = if ($Rule.PSObject.Properties['LogicalPath']) { [string]$Rule.LogicalPath } else { '' }
-    if ($path) { "$($Rule.ProductionServerName) | $path" } else { ('Schutzgruppe „{0}“' -f $pg) }
+    $value = @{}
+    foreach ($n in 'ProtectionGroup', 'ProductionServerName', 'LogicalPath') {
+        $value[$n] = if ($Rule.PSObject.Properties[$n]) { [string]$Rule.$n } else { '' }
+    }
+    $pg = $value.ProtectionGroup
+    $server = $value.ProductionServerName
+    $path = $value.LogicalPath
+    if ($path) { return "$server | $path" }
+    if ($server) { return ('Server „{0}“ in Schutzgruppe „{1}“' -f $server, $pg) }
+    'Schutzgruppe „{0}“' -f $pg
 }
 
 function Get-RuleDetailText {
@@ -149,11 +183,57 @@ function Test-SameTarget {
     (& $get $A 'LogicalPath') -eq (& $get $B 'LogicalPath')
 }
 
-# Target of a new rule: one data source, or its whole protection group.
-function New-RuleTarget {
-    param($Item, [bool]$WholeGroup)
-    if ($WholeGroup) { [ordered]@{ ProtectionGroup = $Item.ProtectionGroup } }
-    else { [ordered]@{ ProductionServerName = $Item.ProductionServerName; LogicalPath = $Item.LogicalPath } }
+# Heading of a rule dialog: the selected data source, or a short list of them.
+function Get-SelectionText {
+    param([object[]]$Items)
+    if ($Items.Count -eq 1) { return Get-ItemLabel $Items[0] }
+    $max = 6
+    $lines = @("$($Items.Count) Datenquellen ausgewählt:") + @($Items | Select-Object -First $max | ForEach-Object { '  ' + (Get-ItemLabel $_) })
+    if ($Items.Count -gt $max) { $lines += "  … und $($Items.Count - $max) weitere" }
+    $lines -join "`n"
+}
+
+# Radio buttons for the scope of a new rule: the selected data sources,
+# their servers within their protection groups, or their protection groups.
+function New-ScopeChoice {
+    param([object[]]$Items)
+    $servers = @(Get-DpmMonitorRuleTarget -Item $Items -Scope Server)
+    $groups = @(Get-DpmMonitorRuleTarget -Item $Items -Scope ProtectionGroup)
+    $dsText = if ($Items.Count -eq 1) { 'Nur diese Datenquelle' } else { "Nur die $($Items.Count) ausgewählten Datenquellen" }
+    $serverText = if ($servers.Count -eq 1) { 'Alle Datenquellen von Server „{0}“ in Schutzgruppe „{1}“' -f $servers[0].ProductionServerName, $servers[0].ProtectionGroup }
+    else {
+        $serverNames = @($servers | ForEach-Object { $_.ProductionServerName.ToLowerInvariant() } | Sort-Object -Unique)
+        if ($serverNames.Count -eq 1) { 'Alle Datenquellen von Server „{0}“, je in ihrer Schutzgruppe ({1} Einträge)' -f $servers[0].ProductionServerName, $servers.Count }
+        else { "Alle Datenquellen dieser Server, je in ihrer Schutzgruppe ($($serverNames.Count) Server, $($servers.Count) Einträge)" }
+    }
+    $groupText = if ($groups.Count -eq 1) { 'Ganze Schutzgruppe „{0}“' -f $groups[0].ProtectionGroup }
+    else { 'Ganze Schutzgruppen ' + (@($groups | ForEach-Object { '„{0}“' -f $_.ProtectionGroup }) -join ', ') }
+    $maxSize = New-ScaledSize 480 0
+    $choice = [ordered]@{
+        Datasource      = New-Control RadioButton @{ Text = $dsText; Checked = $true; AutoSize = $true; MaximumSize = $maxSize; Margin = (New-ScaledPadding 3 10 3 0) }
+        Server          = New-Control RadioButton @{ Text = $serverText; AutoSize = $true; MaximumSize = $maxSize }
+        ProtectionGroup = New-Control RadioButton @{ Text = $groupText; AutoSize = $true; MaximumSize = $maxSize }
+    }
+    $choice
+}
+
+function Get-ChosenScope {
+    param($Choice)
+    foreach ($k in $Choice.Keys) { if ($Choice[$k].Checked) { return $k } }
+}
+
+# Extra dialog height for a long selection list.
+function Get-SelectionHeight {
+    param([object[]]$Items)
+    if ($Items.Count -eq 1) { return 0 }
+    18 * ([Math]::Min($Items.Count, 7) + 2)
+}
+
+# Adds rules to a list; an existing rule for the same target is replaced.
+function Merge-Rule {
+    param([object[]]$Existing, [object[]]$New)
+    $kept = @($Existing | Where-Object { $old = $_; $null -ne $old -and @($New | Where-Object { Test-SameTarget $old $_ }).Count -eq 0 })
+    @($kept) + @($New)
 }
 
 # ---------------------------------------------------------------------------
@@ -190,14 +270,13 @@ function Show-ConnectionDialog {
 }
 
 function Show-ExclusionDialog {
-    <# Returns a new exclusion or $null. #>
-    param($Item)
-    $form = New-Dialog -Text 'Ausnahme festlegen' -Height 320
+    <# Returns the new exclusions (one per target), nothing if cancelled. #>
+    param([object[]]$Items)
+    $form = New-Dialog -Text 'Ausnahme festlegen' -Height (340 + (Get-SelectionHeight $Items))
     $stack = New-Stack
-    $stack.Controls.Add((New-Control Label @{ Text = (Get-ItemLabel $Item); AutoSize = $true; MaximumSize = (New-ScaledSize 480 0) }))
-    $single = New-Control RadioButton @{ Text = 'Nur diese Datenquelle'; Checked = $true; AutoSize = $true; Margin = (New-ScaledPadding 3 10 3 0) }
-    $group = New-Control RadioButton @{ Text = ('Ganze Schutzgruppe „{0}“' -f $Item.ProtectionGroup); AutoSize = $true }
-    $stack.Controls.AddRange(@($single, $group))
+    $stack.Controls.Add((New-Control Label @{ Text = (Get-SelectionText $Items); AutoSize = $true; MaximumSize = (New-ScaledSize 480 0) }))
+    $scope = New-ScopeChoice $Items
+    $stack.Controls.AddRange(@($scope.Values))
     $stack.Controls.Add((New-Control Label @{ Text = 'Grund (Pflicht)'; AutoSize = $true; Margin = (New-ScaledPadding 3 10 3 0) }))
     $reason = New-Control TextBox @{ Width = (Get-Px 480) }
     $stack.Controls.Add($reason)
@@ -211,23 +290,23 @@ function Show-ExclusionDialog {
             if ($reason.Text.Trim() -eq '') { Show-Message 'Bitte einen Grund angeben.' 'Warning'; return }
             $form.DialogResult = 'OK'
         })
-    if ($form.ShowDialog() -ne 'OK') { return $null }
-    $ex = New-RuleTarget -Item $Item -WholeGroup $group.Checked
-    $ex.Reason = $reason.Text.Trim()
-    if ($limited.Checked) { $ex.Until = $until.Value.ToString('yyyy-MM-dd') }
-    [pscustomobject]$ex
+    if ($form.ShowDialog() -ne 'OK') { return }
+    foreach ($ex in @(Get-DpmMonitorRuleTarget -Item $Items -Scope (Get-ChosenScope $scope))) {
+        $ex.Reason = $reason.Text.Trim()
+        if ($limited.Checked) { $ex.Until = $until.Value.ToString('yyyy-MM-dd') }
+        [pscustomobject]$ex
+    }
 }
 
 function Show-RuleDialog {
-    <# Returns a new override (expected schedule or maximum age) or $null. #>
-    param($Item)
-    $form = New-Dialog -Text 'Erwarteten Rhythmus festlegen' -Height 390
+    <# Returns the new overrides (expected schedule or maximum age, one per target), nothing if cancelled. #>
+    param([object[]]$Items)
+    $form = New-Dialog -Text 'Erwarteten Rhythmus festlegen' -Height (410 + (Get-SelectionHeight $Items))
     $stack = New-Stack
-    $stack.Controls.Add((New-Control Label @{ Text = (Get-ItemLabel $Item); AutoSize = $true; MaximumSize = (New-ScaledSize 480 0) }))
-    $stack.Controls.Add((New-Control Label @{ AutoSize = $true; MaximumSize = (New-ScaledSize 480 0); Text = 'Ersetzt den aus DPM gelesenen Zeitplan. Nur nötig, wenn der DPM-Zeitplan nicht passt.' }))
-    $single = New-Control RadioButton @{ Text = 'Nur diese Datenquelle'; Checked = $true; AutoSize = $true; Margin = (New-ScaledPadding 3 10 3 0) }
-    $group = New-Control RadioButton @{ Text = ('Ganze Schutzgruppe „{0}“' -f $Item.ProtectionGroup); AutoSize = $true }
-    $stack.Controls.AddRange(@($single, $group))
+    $stack.Controls.Add((New-Control Label @{ Text = (Get-SelectionText $Items); AutoSize = $true; MaximumSize = (New-ScaledSize 480 0) }))
+    $stack.Controls.Add((New-Control Label @{ AutoSize = $true; MaximumSize = (New-ScaledSize 480 0); Margin = (New-ScaledPadding 3 6 3 0); Text = 'Ersetzt den aus DPM gelesenen Zeitplan. Nur nötig, wenn der DPM-Zeitplan nicht passt.' }))
+    $scope = New-ScopeChoice $Items
+    $stack.Controls.AddRange(@($scope.Values))
     $preset = New-Control ComboBox @{ DropDownStyle = 'DropDownList'; Width = (Get-Px 220); Margin = (New-ScaledPadding 3 10 3 3) }
     [void]$preset.Items.AddRange($script:Presets)
     $preset.SelectedIndex = 0
@@ -265,25 +344,29 @@ function Show-RuleDialog {
     $ok = Add-DialogButton -Form $form
     $ok.Add_Click({
             $form.Tag = $null
-            $rule = New-RuleTarget -Item $Item -WholeGroup $group.Checked
+            $spec = [ordered]@{}
             switch ($preset.SelectedIndex) {
-                0 { $rule.WeekDays = $script:DayOrder }
-                1 { $rule.WeekDays = $script:DayOrder[0..4] }
-                4 { $rule.MaxAgeHours = [int]$hours.Value }
-                default { $rule.WeekDays = @($script:DayOrder | Where-Object { $dayBoxes[$_].Checked }) }
+                0 { $spec.WeekDays = $script:DayOrder }
+                1 { $spec.WeekDays = $script:DayOrder[0..4] }
+                4 { $spec.MaxAgeHours = [int]$hours.Value }
+                default { $spec.WeekDays = @($script:DayOrder | Where-Object { $dayBoxes[$_].Checked }) }
             }
             if ($preset.SelectedIndex -ne 4) {
-                $rule.TimesOfDay = @($times.Text -split '[,; ]+' | Where-Object { $_ })
+                $spec.TimesOfDay = @($times.Text -split '[,; ]+' | Where-Object { $_ })
+            }
+            $newRules = foreach ($rule in @(Get-DpmMonitorRuleTarget -Item $Items -Scope (Get-ChosenScope $scope))) {
+                foreach ($k in $spec.Keys) { $rule[$k] = $spec[$k] }
+                [pscustomobject]$rule
             }
             $probe = Get-DpmMonitorDefaultConfig
             $probe.PingUrl = 'https://example.invalid/'
-            $probe.Overrides = @([pscustomobject]$rule)
+            $probe.Overrides = @($newRules | Select-Object -First 1)
             $errors = @(Test-DpmMonitorConfig -Config $probe | Where-Object { $_ -like 'Regel*' })
             if ($errors.Count -gt 0) { Show-Message (($errors -replace '^Regel 1: ', '') -join "`n") 'Warning'; return }
-            $form.Tag = [pscustomobject]$rule
+            $form.Tag = @($newRules)
             $form.DialogResult = 'OK'
         })
-    if ($form.ShowDialog() -ne 'OK') { return $null }
+    if ($form.ShowDialog() -ne 'OK') { return }
     $form.Tag
 }
 
@@ -362,16 +445,39 @@ function Update-StatusLine {
     $Ctx.StatusLabel.Text = $parts -join '  ·  '
 }
 
-function Update-Evaluation {
+# Identifies a data source across re-evaluations (e.g. to keep the selection).
+function Get-ItemKey {
+    param($Item)
+    ('{0}|{1}|{2}' -f $Item.ProtectionGroup, $Item.ProductionServerName, $Item.LogicalPath).ToLowerInvariant()
+}
+
+# Fills the data source list from the current evaluation, sorted by the
+# column the user clicked last (status by default). Keeps the selection.
+function Update-DatasourceList {
     param($Ctx)
-    $Ctx.DatasourceList.BeginUpdate()
+    $list = $Ctx.DatasourceList
+    $selected = @{}
+    foreach ($r in $list.SelectedItems) { $selected[(Get-ItemKey $r.Tag)] = $true }
+    $order = @{ Failed = 0; Warning = 1; Ok = 2; Excluded = 3 }
+    $primary = switch ($Ctx.SortColumn) {
+        1 { 'ProtectionGroup' }
+        2 { 'ProductionServerName' }
+        3 { 'LogicalPath' }
+        4 { { if ($null -eq $_.LatestRecoveryPoint) { [datetime]::MinValue } else { [datetime]$_.LatestRecoveryPoint } } }
+        5 { 'Reason' }
+        default { { $order[$_.Status] } }
+    }
+    for ($c = 0; $c -lt $list.Columns.Count; $c++) {
+        $text = $script:DatasourceColumns[$c][0]
+        if ($c -eq $Ctx.SortColumn) { $text += $(if ($Ctx.SortDescending) { ' ▼' } else { ' ▲' }) }
+        $list.Columns[$c].Text = $text
+    }
+    $items = @($Ctx.Evaluation.Items) | Sort-Object -Property @{ Expression = $primary; Descending = [bool]$Ctx.SortDescending },
+    @{ Expression = 'ProtectionGroup' }, @{ Expression = 'LogicalPath' }
+    $list.BeginUpdate()
     try {
-        $Ctx.DatasourceList.Items.Clear()
-        if ($null -eq $Ctx.State) { return }
-        $now = if ($Ctx.FixedNow) { $Ctx.FixedNow } else { [datetime]::UtcNow }
-        $Ctx.Evaluation = Invoke-DpmMonitorEvaluation -State $Ctx.State -Config $Ctx.Config -Now $now
-        $order = @{ Failed = 0; Warning = 1; Ok = 2; Excluded = 3 }
-        foreach ($i in ($Ctx.Evaluation.Items | Sort-Object { $order[$_.Status] }, ProtectionGroup, LogicalPath)) {
+        $list.Items.Clear()
+        foreach ($i in $items) {
             $row = New-Object Windows.Forms.ListViewItem($script:StatusText[$i.Status])
             [void]$row.SubItems.Add([string]$i.ProtectionGroup)
             [void]$row.SubItems.Add([string]$i.ProductionServerName)
@@ -380,28 +486,106 @@ function Update-Evaluation {
             [void]$row.SubItems.Add([string]$i.Reason)
             $row.BackColor = $script:StatusColor[$i.Status]
             $row.Tag = $i
-            [void]$Ctx.DatasourceList.Items.Add($row)
+            [void]$list.Items.Add($row)
+            if ($selected.ContainsKey((Get-ItemKey $i))) { $row.Selected = $true }
         }
     }
-    finally { $Ctx.DatasourceList.EndUpdate() }
+    finally { $list.EndUpdate() }
+}
+
+function Update-Evaluation {
+    param($Ctx)
+    if ($null -eq $Ctx.State) {
+        $Ctx.DatasourceList.Items.Clear()
+        return
+    }
+    $now = if ($Ctx.FixedNow) { $Ctx.FixedNow } else { [datetime]::UtcNow }
+    $Ctx.Evaluation = Invoke-DpmMonitorEvaluation -State $Ctx.State -Config $Ctx.Config -Now $now
+    Update-DatasourceList $Ctx
     $failed = @($Ctx.Evaluation.Items | Where-Object Status -eq 'Failed').Count
     $Ctx.SummaryLabel.Text = "Bewertung mit der aktuellen (auch ungespeicherten) Konfiguration: $(@($Ctx.Evaluation.Items).Count) Datenquellen, $failed mit Fehler."
 }
 
+# Reads DPM in a background runspace, so the window stays usable meanwhile:
+# loading the DPM module and connecting to DPM take several seconds. The
+# timer of the main window picks up the result (Complete-DatasourceStateLoad).
+# One runspace with one STA thread serves the whole window, so a reload uses
+# the same DPM connection and the already loaded modules.
 function Update-DatasourceState {
-    param($Ctx, $Form)
-    Invoke-WithWaitCursor $Form {
-        try {
-            $Ctx.SummaryLabel.Text = 'DPM wird gelesen ...'
-            [Windows.Forms.Application]::DoEvents()
-            $Ctx.State = Get-DpmMonitorState
+    param($Ctx)
+    if ($Ctx.Loader) { return }
+    $Ctx.SummaryLabel.Text = 'DPM wird gelesen ...'
+    $Ctx.SummaryLabel.Refresh()
+    $Ctx.ReloadButton.Enabled = $false
+    $ps = $null
+    try {
+        if ($null -eq $Ctx.Runspace) {
+            $runspace = [Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+            $runspace.ApartmentState = 'STA'   # like powershell.exe and the scheduled task
+            $runspace.ThreadOptions = 'ReuseThread'
+            $runspace.Open()
+            $Ctx.Runspace = $runspace
         }
-        catch {
-            $Ctx.State = $null
-            $Ctx.SummaryLabel.Text = "DPM konnte nicht gelesen werden: $($_.Exception.Message)"
-        }
+        $ps = [PowerShell]::Create()
+        $ps.Runspace = $Ctx.Runspace
+        [void]$ps.AddScript({
+                param([string]$ModulePath)
+                $ErrorActionPreference = 'Stop'
+                $watch = [Diagnostics.Stopwatch]::StartNew()
+                # In a catch block $_ is the original error (e.g. from DPM), not a wrapper.
+                try {
+                    Import-Module $ModulePath
+                    $state = Get-DpmMonitorState
+                }
+                catch { throw $_.Exception.Message }
+                [pscustomobject]@{ State = $state; Seconds = $watch.Elapsed.TotalSeconds }
+            }).AddArgument((Join-Path $script:PackagePath 'DpmMonitor.psm1'))
+        $handle = $ps.BeginInvoke()
+        $Ctx.LoadTimer.Start()
+        $Ctx.Loader = [pscustomobject]@{ PowerShell = $ps; Handle = $handle }
     }
-    if ($Ctx.State) { Update-Evaluation $Ctx }
+    catch {
+        # Fallback when the runspace cannot be started: read in the foreground as before.
+        Write-Verbose "Hintergrund-Runspace fehlgeschlagen: $($_.Exception.Message)"
+        if ($ps) { $ps.Dispose() }
+        Invoke-WithWaitCursor $Ctx.Form {
+            try { $Ctx.State = Get-DpmMonitorState }
+            catch {
+                $Ctx.State = $null
+                $Ctx.SummaryLabel.Text = "DPM konnte nicht gelesen werden: $($_.Exception.Message)"
+            }
+        }
+        $Ctx.ReloadButton.Enabled = $true
+        if ($Ctx.State) { Update-Evaluation $Ctx }
+    }
+}
+
+function Complete-DatasourceStateLoad {
+    param($Ctx)
+    $loader = $Ctx.Loader
+    if ($null -eq $loader -or -not $loader.Handle.IsCompleted) { return }
+    $Ctx.LoadTimer.Stop()
+    $Ctx.Loader = $null
+    $Ctx.ReloadButton.Enabled = $true
+    $seconds = $null
+    try {
+        $result = @($loader.PowerShell.EndInvoke($loader.Handle)) | Select-Object -Last 1
+        if ($null -eq $result -or $null -eq $result.State) { throw 'Keine Daten von DPM erhalten.' }
+        $Ctx.State = $result.State
+        $seconds = $result.Seconds
+    }
+    catch {
+        # A .NET call wraps the error of the runspace once; show the message thrown there.
+        $e = $_.Exception
+        if ($e -is [Management.Automation.MethodInvocationException] -and $e.InnerException) { $e = $e.InnerException }
+        $Ctx.State = $null
+        $Ctx.SummaryLabel.Text = "DPM konnte nicht gelesen werden: $($e.Message)"
+    }
+    finally { $loader.PowerShell.Dispose() }
+    if ($Ctx.State) {
+        Update-Evaluation $Ctx
+        $Ctx.SummaryLabel.Text += ' DPM gelesen in {0:N1} s.' -f $seconds
+    }
 }
 
 function Update-RuleList {
@@ -471,21 +655,24 @@ function Show-MainForm {
     # --- Datenquellen ---
     $tabDs = New-Object Windows.Forms.TabPage('Datenquellen')
     $Ctx.SummaryLabel = New-Control Label @{ Dock = 'Top'; Height = (Get-Px 26); Padding = (New-ScaledPadding 4 6 4 0); Text = 'Noch nicht geladen.' }
-    $list = New-Control ListView @{ View = 'Details'; FullRowSelect = $true; MultiSelect = $false; Dock = 'Fill'; HideSelection = $false }
-    foreach ($col in @(@('Status', 90), @('Schutzgruppe', 150), @('Server', 190), @('Pfad', 200), @('Letzter Punkt', 110), @('Hinweis', 420))) {
+    $list = New-Control ListView @{ View = 'Details'; FullRowSelect = $true; MultiSelect = $true; Dock = 'Fill'; HideSelection = $false }
+    foreach ($col in $script:DatasourceColumns) {
         [void]$list.Columns.Add($col[0], (Get-Px $col[1]))
     }
     $Ctx.DatasourceList = $list
+    $Ctx.LoadTimer = New-Object Windows.Forms.Timer
+    $Ctx.LoadTimer.Interval = 200
     $dsButtons = New-Control FlowLayoutPanel @{ Dock = 'Bottom'; Height = (Get-Px 40); Padding = (New-ScaledPadding 2) }
     $reload = New-Control Button @{ Text = 'Neu laden'; AutoSize = $true }
     $exclude = New-Control Button @{ Text = 'Ausnehmen …'; AutoSize = $true }
     $rule = New-Control Button @{ Text = 'Rhythmus festlegen …'; AutoSize = $true }
     $dsButtons.Controls.AddRange(@($reload, $exclude, $rule))
+    $Ctx.ReloadButton = $reload
     $tabDs.Controls.AddRange(@($list, $Ctx.SummaryLabel, $dsButtons))
 
     # --- Ausnahmen und Regeln ---
     $tabRules = New-Object Windows.Forms.TabPage('Ausnahmen und Regeln')
-    $rules = New-Control ListView @{ View = 'Details'; FullRowSelect = $true; MultiSelect = $false; Dock = 'Fill'; HideSelection = $false }
+    $rules = New-Control ListView @{ View = 'Details'; FullRowSelect = $true; MultiSelect = $true; Dock = 'Fill'; HideSelection = $false }
     foreach ($col in @(@('Art', 130), @('Gilt für', 330), @('Details', 480))) { [void]$rules.Columns.Add($col[0], (Get-Px $col[1])) }
     $Ctx.RuleList = $rules
     $ruleButtons = New-Control FlowLayoutPanel @{ Dock = 'Bottom'; Height = (Get-Px 40); Padding = (New-ScaledPadding 2) }
@@ -547,30 +734,48 @@ function Show-MainForm {
     $form.Controls.AddRange(@($tabs, $Ctx.StatusLabel, $bottom))
 
     # --- events ---
-    $selected = { if ($list.SelectedItems.Count -eq 1) { $list.SelectedItems[0].Tag } else { $null } }
-    $reload.Add_Click({ Update-DatasourceState $Ctx $form })
+    $selected = { @($list.SelectedItems | ForEach-Object { $_.Tag }) }
+    $reload.Add_Click({ Update-DatasourceState $Ctx })
+    # Click on a column header: sort by it; a second click reverses the order.
+    $list.Add_ColumnClick({
+            if ($Ctx.SortColumn -eq $_.Column) { $Ctx.SortDescending = -not $Ctx.SortDescending }
+            else {
+                $Ctx.SortColumn = $_.Column
+                $Ctx.SortDescending = $false
+            }
+            if ($Ctx.Evaluation) { Update-DatasourceList $Ctx }
+        })
+    $Ctx.LoadTimer.Add_Tick({ Complete-DatasourceStateLoad $Ctx })
+    $form.Add_FormClosed({
+            $Ctx.LoadTimer.Stop()
+            $Ctx.LoadTimer.Dispose()
+            # A running read is only asked to stop; powershell.exe ends with the script anyway.
+            if ($Ctx.Loader) { [void]$Ctx.Loader.PowerShell.BeginStop($null, $null) }
+            elseif ($Ctx.Runspace) { $Ctx.Runspace.Dispose() }
+        })
     $exclude.Add_Click({
-            $item = & $selected
-            if (-not $item) { Show-Message 'Bitte zuerst eine Datenquelle auswählen.'; return }
-            $ex = Show-ExclusionDialog -Item $item
-            if (-not $ex) { return }
-            $Ctx.Config.Exclusions = @(@($Ctx.Config.Exclusions) | Where-Object { -not (Test-SameTarget $_ $ex) }) + $ex
+            $items = @(& $selected)
+            if ($items.Count -eq 0) { Show-Message 'Bitte zuerst eine oder mehrere Datenquellen auswählen (Strg/Umschalt für mehrere).'; return }
+            $new = @(Show-ExclusionDialog -Items $items)
+            if ($new.Count -eq 0) { return }
+            $Ctx.Config.Exclusions = @(Merge-Rule -Existing @($Ctx.Config.Exclusions) -New $new)
             Set-Dirty $Ctx; Update-RuleList $Ctx; Update-Evaluation $Ctx
         })
     $rule.Add_Click({
-            $item = & $selected
-            if (-not $item) { Show-Message 'Bitte zuerst eine Datenquelle auswählen.'; return }
-            $ov = Show-RuleDialog -Item $item
-            if (-not $ov) { return }
-            $Ctx.Config.Overrides = @(@($Ctx.Config.Overrides) | Where-Object { -not (Test-SameTarget $_ $ov) }) + $ov
+            $items = @(& $selected)
+            if ($items.Count -eq 0) { Show-Message 'Bitte zuerst eine oder mehrere Datenquellen auswählen (Strg/Umschalt für mehrere).'; return }
+            $new = @(Show-RuleDialog -Items $items)
+            if ($new.Count -eq 0) { return }
+            $Ctx.Config.Overrides = @(Merge-Rule -Existing @($Ctx.Config.Overrides) -New $new)
             Set-Dirty $Ctx; Update-RuleList $Ctx; Update-Evaluation $Ctx
         })
     $list.Add_DoubleClick({ $exclude.PerformClick() })
     $removeRule.Add_Click({
-            if ($rules.SelectedItems.Count -ne 1) { Show-Message 'Bitte zuerst einen Eintrag auswählen.'; return }
-            $target = $rules.SelectedItems[0].Tag
-            $Ctx.Config.Exclusions = @(@($Ctx.Config.Exclusions) | Where-Object { -not [object]::ReferenceEquals($_, $target) })
-            $Ctx.Config.Overrides = @(@($Ctx.Config.Overrides) | Where-Object { -not [object]::ReferenceEquals($_, $target) })
+            if ($rules.SelectedItems.Count -eq 0) { Show-Message 'Bitte zuerst einen oder mehrere Einträge auswählen.'; return }
+            $targets = @($rules.SelectedItems | ForEach-Object { $_.Tag })
+            $isSelected = { param($o) @($targets | Where-Object { [object]::ReferenceEquals($_, $o) }).Count -gt 0 }
+            $Ctx.Config.Exclusions = @(@($Ctx.Config.Exclusions) | Where-Object { -not (& $isSelected $_) })
+            $Ctx.Config.Overrides = @(@($Ctx.Config.Overrides) | Where-Object { -not (& $isSelected $_) })
             Set-Dirty $Ctx; Update-RuleList $Ctx; Update-Evaluation $Ctx
         })
     $editUrl.Add_Click({
@@ -660,17 +865,18 @@ function New-Context {
         BufferInput    = $null
         FallbackCheck  = $null
         FallbackInput  = $null
+        ReloadButton   = $null
+        SortColumn     = 0       # data source list: column to sort by
+        SortDescending = $false
+        LoadTimer      = $null   # polls the background read of DPM
+        Loader         = $null   # running background read
+        Runspace       = $null   # background runspace for DPM, opened on first use
     }
 }
 
 # ---------------------------------------------------------------------------
 # Start
 # ---------------------------------------------------------------------------
-
-function Test-Administrator {
-    $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-    $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
 
 function Start-Configuration {
     $installPath = (Get-DpmMonitorPath).InstallPath
@@ -692,9 +898,9 @@ function Start-Configuration {
         $ctx.Config = Read-DpmMonitorConfig -Path $ctx.ConfigPath
         Show-MainForm -Ctx $ctx -OnShown {
             param($Ctx, $Form)
+            Update-DatasourceState $Ctx
             Update-StatusLine $Ctx
             Invoke-TaskNow -Ctx $Ctx -Form $Form -Heading 'Installiert. Ergebnis der ersten Prüfung:'
-            Update-DatasourceState $Ctx $Form
         }
         return
     }
@@ -722,21 +928,14 @@ function Start-Configuration {
         Save-DpmMonitorConfig -Config $ctx.Config -Path $ctx.ConfigPath
     }
     Show-MainForm -Ctx $ctx -OnShown {
-        param($Ctx, $Form)
+        param($Ctx)
+        Update-DatasourceState $Ctx
         Update-StatusLine $Ctx
-        Update-DatasourceState $Ctx $Form
     }
 }
 
 # Dot-sourcing (development tools) only loads the functions.
 if ($MyInvocation.InvocationName -ne '.') {
-    if (-not (Test-Administrator)) {
-        $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-        Start-Process -FilePath $powershell -Verb RunAs -ArgumentList @(
-            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-WindowStyle', 'Hidden', '-File', "`"$PSCommandPath`""
-        )
-        return
-    }
     try { Start-Configuration }
     catch { Show-Message "Unerwarteter Fehler: $($_.Exception.Message)" 'Error' }
 }

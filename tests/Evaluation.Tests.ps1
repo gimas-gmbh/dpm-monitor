@@ -237,6 +237,47 @@ Describe 'Invoke-DpmMonitorEvaluation' {
             @($e.Items | Where-Object Status -eq 'Excluded') | Should -HaveCount 2
             $e.Status | Should -Be 'Failed'   # nothing left to monitor
         }
+        It 'excludes all data sources of one server within a protection group' {
+            $ds = @(
+                New-TestDatasource -Path 'SRV-SQL01\db01' -Latest (L '2026-11-01 20:00')
+                New-TestDatasource -Path 'SRV-SQL01\db02' -Latest (L '2026-11-01 20:00')
+                New-TestDatasource -Path 'SRV-SQL02\db01' -Server 'srv-sql02.example.local' -Latest (L '2026-11-19 20:01')
+            )
+            $other = New-TestDatasource -Path 'SRV-SQL01\db03' -Latest (L '2026-11-19 20:01')
+            $twoServers = New-TestState -Groups @(
+                New-TestGroup -Name 'PG SQL' -Schedules @($daily) -Datasources $ds
+                New-TestGroup -Name 'PG Andere' -Schedules @($daily) -Datasources @($other)
+            )
+            $ex = [pscustomobject]@{ ProtectionGroup = 'PG SQL'; ProductionServerName = 'SRV-SQL01.example.local'; Reason = 'Server wird abgelöst' }
+            $e = Invoke-DpmMonitorEvaluation -State $twoServers -Config (New-TestConfig @{ Exclusions = @($ex) }) -Now $now -TimeZone $Tz
+            $e.Status | Should -Be 'Ok'
+            @($e.Items | Where-Object Status -eq 'Excluded').LogicalPath | Should -Be @('SRV-SQL01\db01', 'SRV-SQL01\db02')
+            ($e.Items | Where-Object LogicalPath -eq 'SRV-SQL01\db03').Status | Should -Be 'Ok'
+            $e.Notices.Count | Should -Be 0
+        }
+        It 'does not report an expired exclusion while a wider one is active' {
+            $expired = New-Exclusion -Until '2026-11-01'
+            $server = [pscustomobject]@{ ProtectionGroup = 'PG SQL'; ProductionServerName = 'srv-sql01.example.local'; Reason = 'Server wird abgelöst' }
+            $e = Invoke-DpmMonitorEvaluation -State $state -Config (New-TestConfig @{ Exclusions = @($expired, $server) }) -Now $now -TimeZone $Tz
+            ($e.Items | Where-Object LogicalPath -eq 'SRV-SQL01\db02').Status | Should -Be 'Excluded'
+            $e.Notices.Count | Should -Be 0
+        }
+        It 'takes the reason from the most specific active exclusion' {
+            $server = [pscustomobject]@{ ProtectionGroup = 'PG SQL'; ProductionServerName = 'srv-sql01.example.local'; Reason = 'Server wird abgelöst' }
+            $e = Invoke-DpmMonitorEvaluation -State $state -Config (New-TestConfig @{ Exclusions = @($server, (New-Exclusion -Until '2026-12-31')) }) -Now $now -TimeZone $Tz
+            ($e.Items | Where-Object LogicalPath -eq 'SRV-SQL01\db02').Reason | Should -Be 'Ausgenommen: Datenbank wird abgelöst (bis 2026-12-31)'
+            ($e.Items | Where-Object LogicalPath -eq 'SRV-SQL01\db01').Reason | Should -Be 'Ausgenommen: Server wird abgelöst'
+        }
+        It 'does not call a rule unused when it only covers excluded data sources' {
+            $ov = [pscustomobject]@{ ProductionServerName = 'srv-sql01.example.local'; LogicalPath = 'SRV-SQL01\db02'; MaxAgeHours = 48 }
+            $e = Invoke-DpmMonitorEvaluation -State $state -Config (New-TestConfig @{ Exclusions = @(New-Exclusion); Overrides = @($ov) }) -Now $now -TimeZone $Tz
+            $e.Notices.Count | Should -Be 0
+        }
+        It 'names a server within a protection group clearly in notices' {
+            $server = [pscustomobject]@{ ProtectionGroup = 'PG SQL'; ProductionServerName = 'srv-sql01.example.local'; Reason = 'Server wird abgelöst'; Until = '2026-11-19' }
+            $e = Invoke-DpmMonitorEvaluation -State $state -Config (New-TestConfig @{ Exclusions = @($server) }) -Now $now -TimeZone $Tz
+            $e.Notices | Should -Be @('Ausnahme abgelaufen am 2026-11-19, wird wieder überwacht: Server „srv-sql01.example.local“ in Schutzgruppe „PG SQL“')
+        }
         It 'reports exclusions that match nothing' {
             $cfg = New-TestConfig @{ Exclusions = @((New-Exclusion -Path 'SRV-SQL01\gone')) }
             $e = Invoke-DpmMonitorEvaluation -State $state -Config $cfg -Now $now -TimeZone $Tz
@@ -267,12 +308,49 @@ Describe 'Invoke-DpmMonitorEvaluation' {
             ($e.Items | Where-Object LogicalPath -eq 'SRV-SQL01\db01').Status | Should -Be 'Ok'
             ($e.Items | Where-Object LogicalPath -eq 'SRV-SQL01\db02').Status | Should -Be 'Failed'
         }
+        It 'ranks the server rule between data source and protection group rule' {
+            $pgRule = [pscustomobject]@{ ProtectionGroup = 'PG SQL'; MaxAgeHours = 24 }
+            $serverRule = [pscustomobject]@{ ProtectionGroup = 'PG SQL'; ProductionServerName = 'srv-sql01.example.local'; MaxAgeHours = 168 }
+            $dsRule = [pscustomobject]@{ ProductionServerName = 'srv-sql01.example.local'; LogicalPath = 'SRV-SQL01\db02'; MaxAgeHours = 24 }
+            foreach ($order in @(@($pgRule, $serverRule, $dsRule), @($dsRule, $serverRule, $pgRule))) {
+                $e = Invoke-DpmMonitorEvaluation -State $state -Config (New-TestConfig @{ Overrides = $order }) -Now $friday -TimeZone $Tz
+                ($e.Items | Where-Object LogicalPath -eq 'SRV-SQL01\db01').Status | Should -Be 'Ok'
+                ($e.Items | Where-Object LogicalPath -eq 'SRV-SQL01\db02').Status | Should -Be 'Failed'
+            }
+        }
         It 'uses the global fallback only when no schedule is known' {
             $ds = New-TestDatasource -Latest (L '2026-11-19 08:00')
             $noSchedule = New-TestState -Groups @(New-TestGroup -Schedules @() -Datasources @($ds))
             (Invoke-DpmMonitorEvaluation -State $noSchedule -Config (New-TestConfig @{ FallbackMaxAgeHours = 48 }) -Now $friday -TimeZone $Tz).Status | Should -Be 'Ok'
             (Invoke-DpmMonitorEvaluation -State $noSchedule -Config (New-TestConfig) -Now $friday -TimeZone $Tz).Status | Should -Be 'Failed'
             (Invoke-DpmMonitorEvaluation -State $state -Config (New-TestConfig @{ FallbackMaxAgeHours = 500 }) -Now $friday -TimeZone $Tz).Status | Should -Be 'Failed'
+        }
+    }
+
+    Context 'rule targets for a selection' {
+        BeforeAll {
+            $items = @(
+                [pscustomobject]@{ ProtectionGroup = 'PG SQL'; ProductionServerName = 'srv-sql01.example.local'; LogicalPath = 'SRV-SQL01\db01' }
+                [pscustomobject]@{ ProtectionGroup = 'PG SQL'; ProductionServerName = 'SRV-SQL01.example.local'; LogicalPath = 'SRV-SQL01\db02' }
+                [pscustomobject]@{ ProtectionGroup = 'PG SQL'; ProductionServerName = 'srv-sql02.example.local'; LogicalPath = 'SRV-SQL02\db01' }
+                [pscustomobject]@{ ProtectionGroup = 'PG Fileserver'; ProductionServerName = 'srv-sql01.example.local'; LogicalPath = 'D:\' }
+            )
+        }
+        It 'returns one target per data source' {
+            $t = @(Get-DpmMonitorRuleTarget -Item $items -Scope Datasource)
+            $t | Should -HaveCount 4
+            $t[0].Keys | Should -Be @('ProductionServerName', 'LogicalPath')
+        }
+        It 'returns one target per server and protection group' {
+            $t = @(Get-DpmMonitorRuleTarget -Item $items -Scope Server)
+            $t | Should -HaveCount 3
+            $t[0].ProtectionGroup | Should -Be 'PG SQL'
+            $t[0].ProductionServerName | Should -Be 'srv-sql01.example.local'
+            $t[2].ProtectionGroup | Should -Be 'PG Fileserver'
+        }
+        It 'returns one target per protection group' {
+            $t = @(Get-DpmMonitorRuleTarget -Item $items -Scope ProtectionGroup)
+            @($t | ForEach-Object { $_.ProtectionGroup }) | Should -Be @('PG SQL', 'PG Fileserver')
         }
     }
 

@@ -23,7 +23,14 @@ Describe 'Test-DpmMonitorConfig' {
     }
     It 'requires a target for rules' {
         $ex = [pscustomobject]@{ LogicalPath = 'SRV-SQL01\db01'; Reason = 'x' }
-        @(Test-DpmMonitorConfig (New-TestConfig @{ Exclusions = @($ex) })) | Should -BeLike '*braucht eine Schutzgruppe oder Server und Pfad*'
+        @(Test-DpmMonitorConfig (New-TestConfig @{ Exclusions = @($ex) })) | Should -BeLike '*braucht eine Schutzgruppe (optional mit Server) oder Server und Pfad*'
+        $ex = [pscustomobject]@{ ProductionServerName = 'srv-sql01.example.local'; Reason = 'x' }
+        @(Test-DpmMonitorConfig (New-TestConfig @{ Exclusions = @($ex) })) | Should -BeLike '*braucht eine Schutzgruppe*'
+    }
+    It 'accepts a server within a protection group as target' {
+        $ex = [pscustomobject]@{ ProtectionGroup = 'PG SQL'; ProductionServerName = 'srv-sql01.example.local'; Reason = 'Server wird abgelöst' }
+        $ov = [pscustomobject]@{ ProtectionGroup = 'PG SQL'; ProductionServerName = 'srv-sql01.example.local'; MaxAgeHours = 48 }
+        @(Test-DpmMonitorConfig (New-TestConfig @{ Exclusions = @($ex); Overrides = @($ov) })) | Should -HaveCount 0
     }
     It 'requires either a maximum age or a schedule for overrides' {
         $ov = [pscustomobject]@{ ProtectionGroup = 'PG SQL' }

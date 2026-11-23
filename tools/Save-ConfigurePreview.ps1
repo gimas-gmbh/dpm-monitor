@@ -106,8 +106,10 @@ for ($i = 0; $i -lt $tabs.TabPages.Count; $i++) {
 }
 
 $item = $ctx.DatasourceList.Items[0].Tag
-Save-DialogImage 'dialog-exclusion' { Show-ExclusionDialog -Item $item }
-Save-DialogImage 'dialog-rule' { Show-RuleDialog -Item $item }
+Save-DialogImage 'dialog-exclusion' { Show-ExclusionDialog -Items @($item) }
+Save-DialogImage 'dialog-rule' { Show-RuleDialog -Items @($item) }
+$several = @($ctx.DatasourceList.Items | Select-Object -First 3 | ForEach-Object { $_.Tag })
+Save-DialogImage 'dialog-exclusion-multi' { Show-ExclusionDialog -Items $several }
 Save-DialogImage 'dialog-connection' { Show-ConnectionDialog -Config (Get-DpmMonitorDefaultConfig) -Heading "$script:Title $Version installieren" -OkText 'Installieren' }
 
 $ctx.Dirty = $false
