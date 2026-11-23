@@ -129,10 +129,13 @@ function Get-ItemLabel {
 
 function Get-RuleTargetText {
     param($Rule)
-    $get = { param($n) if ($Rule.PSObject.Properties[$n]) { [string]$Rule.$n } else { '' } }
-    $pg = & $get 'ProtectionGroup'
-    $server = & $get 'ProductionServerName'
-    $path = & $get 'LogicalPath'
+    $value = @{}
+    foreach ($n in 'ProtectionGroup', 'ProductionServerName', 'LogicalPath') {
+        $value[$n] = if ($Rule.PSObject.Properties[$n]) { [string]$Rule.$n } else { '' }
+    }
+    $pg = $value.ProtectionGroup
+    $server = $value.ProductionServerName
+    $path = $value.LogicalPath
     if ($path) { return "$server | $path" }
     if ($server) { return ('Server „{0}“ in Schutzgruppe „{1}“' -f $server, $pg) }
     'Schutzgruppe „{0}“' -f $pg
