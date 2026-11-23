@@ -9,6 +9,10 @@
     Ergebnis: ein Ordner und eine ZIP-Datei auf dem Desktop. Die ZIP bitte zurueckschicken.
 
     Die Ausgabe enthaelt Server- und Datenquellennamen des Kunden, aber keine Kennwoerter.
+
+    Die Recovery Points kommen zuletzt und koennen bei vielen Datenquellen lange dauern.
+    Schneller Lauf ohne sie (in einer PowerShell):
+      powershell.exe -ExecutionPolicy Bypass -File Get-DpmInventory.ps1 -SkipRecoveryPoints
 #>
 # AsyncTimeoutSeconds is used inside an Invoke-Step script block.
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'AsyncTimeoutSeconds')]
@@ -401,7 +405,8 @@ try {
                     $remaining = ''
                     if ($n -gt 1) {
                         $perItem = $total.Elapsed.TotalSeconds / ($n - 1)
-                        $remaining = ', noch ca. {0:N0} min' -f ($perItem * ($dsEntries.Count - $n + 1) / 60)
+                        $minutes = $perItem * ($dsEntries.Count - $n + 1) / 60
+                        $remaining = if ($minutes -lt 1) { ', noch unter 1 min' } else { ', noch ca. {0:N0} min' -f $minutes }
                     }
                     Write-Progress -Activity 'Recovery Points lesen' -Status "$n / $($dsEntries.Count)$($remaining): $($e.DS.LogicalPath)" `
                         -PercentComplete ([int](100 * ($n - 1) / $dsEntries.Count))

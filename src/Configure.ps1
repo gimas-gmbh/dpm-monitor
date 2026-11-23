@@ -175,8 +175,9 @@ function New-ScopeChoice {
     $dsText = if ($Items.Count -eq 1) { 'Nur diese Datenquelle' } else { "Nur die $($Items.Count) ausgewählten Datenquellen" }
     $serverText = if ($servers.Count -eq 1) { 'Alle Datenquellen von Server „{0}“ in Schutzgruppe „{1}“' -f $servers[0].ProductionServerName, $servers[0].ProtectionGroup }
     else {
-        $serverCount = @($servers | ForEach-Object { $_.ProductionServerName.ToLowerInvariant() } | Sort-Object -Unique).Count
-        "Alle Datenquellen dieser Server, je in ihrer Schutzgruppe ($serverCount Server, $($servers.Count) Einträge)"
+        $serverNames = @($servers | ForEach-Object { $_.ProductionServerName.ToLowerInvariant() } | Sort-Object -Unique)
+        if ($serverNames.Count -eq 1) { 'Alle Datenquellen von Server „{0}“, je in ihrer Schutzgruppe ({1} Einträge)' -f $servers[0].ProductionServerName, $servers.Count }
+        else { "Alle Datenquellen dieser Server, je in ihrer Schutzgruppe ($($serverNames.Count) Server, $($servers.Count) Einträge)" }
     }
     $groupText = if ($groups.Count -eq 1) { 'Ganze Schutzgruppe „{0}“' -f $groups[0].ProtectionGroup }
     else { 'Ganze Schutzgruppen ' + (@($groups | ForEach-Object { '„{0}“' -f $_.ProtectionGroup }) -join ', ') }

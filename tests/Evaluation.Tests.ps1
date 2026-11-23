@@ -262,6 +262,17 @@ Describe 'Invoke-DpmMonitorEvaluation' {
             ($e.Items | Where-Object LogicalPath -eq 'SRV-SQL01\db02').Status | Should -Be 'Excluded'
             $e.Notices.Count | Should -Be 0
         }
+        It 'takes the reason from the most specific active exclusion' {
+            $server = [pscustomobject]@{ ProtectionGroup = 'PG SQL'; ProductionServerName = 'srv-sql01.example.local'; Reason = 'Server wird abgelöst' }
+            $e = Invoke-DpmMonitorEvaluation -State $state -Config (New-TestConfig @{ Exclusions = @($server, (New-Exclusion -Until '2026-12-31')) }) -Now $now -TimeZone $Tz
+            ($e.Items | Where-Object LogicalPath -eq 'SRV-SQL01\db02').Reason | Should -Be 'Ausgenommen: Datenbank wird abgelöst (bis 2026-12-31)'
+            ($e.Items | Where-Object LogicalPath -eq 'SRV-SQL01\db01').Reason | Should -Be 'Ausgenommen: Server wird abgelöst'
+        }
+        It 'does not call a rule unused when it only covers excluded data sources' {
+            $ov = [pscustomobject]@{ ProductionServerName = 'srv-sql01.example.local'; LogicalPath = 'SRV-SQL01\db02'; MaxAgeHours = 48 }
+            $e = Invoke-DpmMonitorEvaluation -State $state -Config (New-TestConfig @{ Exclusions = @(New-Exclusion); Overrides = @($ov) }) -Now $now -TimeZone $Tz
+            $e.Notices.Count | Should -Be 0
+        }
         It 'reports exclusions that match nothing' {
             $cfg = New-TestConfig @{ Exclusions = @((New-Exclusion -Path 'SRV-SQL01\gone')) }
             $e = Invoke-DpmMonitorEvaluation -State $state -Config $cfg -Now $now -TimeZone $Tz

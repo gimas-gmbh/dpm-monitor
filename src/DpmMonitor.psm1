@@ -464,8 +464,9 @@ function Invoke-DpmMonitorEvaluation {
                 MissedCount          = 0
             }
 
-            # Exclusions: active ones exclude. Expired ones are reported once, unless
-            # another active exclusion (e.g. for the whole server) still covers the data source.
+            # Exclusions: active ones exclude; the most specific one supplies the reason.
+            # Expired ones are reported once, unless another active exclusion
+            # (e.g. for the whole server) still covers the data source.
             $excluded = $null
             $expired = @()
             for ($i = 0; $i -lt $exclusions.Count; $i++) {
@@ -473,7 +474,7 @@ function Invoke-DpmMonitorEvaluation {
                 if (-not (Test-DpmMonitorRuleMatch $ex $pg $ds)) { continue }
                 $usedExclusions[$i] = $true
                 if (Test-DpmMonitorExclusionActive $ex $localToday) {
-                    if ($null -eq $excluded) { $excluded = $ex }
+                    if ($null -eq $excluded -or (Get-DpmMonitorRuleSpecificity $ex) -gt (Get-DpmMonitorRuleSpecificity $excluded)) { $excluded = $ex }
                 }
                 else { $expired += $ex }
             }
@@ -489,6 +490,10 @@ function Invoke-DpmMonitorEvaluation {
                 $item.Reason = "Ausgenommen: $($excluded.Reason)" + $(if ($until) { " (bis $until)" } else { '' })
                 if ($null -ne $ds.LatestRecoveryPoint -and [datetime]$ds.LatestRecoveryPoint -ne [datetime]::MinValue) {
                     $item.LatestRecoveryPoint = ConvertTo-DpmMonitorUtc -Time ([datetime]$ds.LatestRecoveryPoint) -TimeZone $TimeZone
+                }
+                # A rule for an excluded data source still counts as matching.
+                for ($i = 0; $i -lt $overrides.Count; $i++) {
+                    if (Test-DpmMonitorRuleMatch $overrides[$i] $pg $ds) { $usedOverrides[$i] = $true }
                 }
                 $items.Add([pscustomobject]$item)
                 continue
