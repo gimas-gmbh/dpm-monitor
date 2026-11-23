@@ -28,9 +28,9 @@ Details, Ziele und Entscheidungen: [DESIGN.md](DESIGN.md).
 4. Ping-URL eintragen, „Installieren“. Die erste Prüfung läuft sofort, das Ergebnis wird angezeigt.
 
 Danach öffnet sich die Oberfläche über das Startmenü („gimas DPM Monitor“). Dort lassen sich Datenquellen
-ausnehmen (mit Grund, optional befristet), abweichende Rhythmen festlegen (je Datenquelle, Server in einer
-Schutzgruppe oder ganze Schutzgruppe, auch für mehrere ausgewählte Datenquellen auf einmal), die Prüfung sofort starten und
-dpm-monitor wieder entfernen. Für ein Update das neue Paket entpacken und dessen `Konfigurieren.cmd` starten;
+ausnehmen (mit Grund, optional befristet) und abweichende Rhythmen festlegen, beides je Datenquelle, je Server
+in einer Schutzgruppe oder für eine ganze Schutzgruppe, auch für mehrere ausgewählte Datenquellen auf einmal.
+Außerdem lassen sich die Prüfung sofort starten und dpm-monitor wieder entfernen. Für ein Update das neue Paket entpacken und dessen `Konfigurieren.cmd` starten;
 die Konfiguration bleibt erhalten.
 
 Installiert wird nach `C:\Program Files\DpmMonitor\`, geprüft wird per geplanter Aufgabe als SYSTEM alle 4 Stunden.
@@ -56,8 +56,8 @@ eines DPM-Servers aus. Es ändert nichts.
 3. Ergebnis ist eine ZIP-Datei auf dem Desktop.
 
 Die Wiederherstellungspunkte liest das Skript zuletzt, weil das bei vielen Datenquellen lange dauert; die Konsole
-zeigt Dauer und Restzeit je Datenquelle. Online-Punkte fragt es nur bei Schutzgruppen mit Online-Zeitplan ab.
-Ein Abbruch mit Strg+C speichert das Teilergebnis und erstellt die ZIP trotzdem. Ohne Wiederherstellungspunkte:
+zeigt Dauer und Restzeit je Datenquelle. Online-Punkte fragt es nur bei Schutzgruppen mit Online-Zeitplan ab
+(oder wenn das unbekannt ist). Ein Abbruch mit Strg+C speichert das Teilergebnis und erstellt die ZIP trotzdem. Ohne Wiederherstellungspunkte:
 `powershell.exe -ExecutionPolicy Bypass -File Get-DpmInventory.ps1 -SkipRecoveryPoints`.
 
 Die ZIP enthält Server-, Domänen- und Datenquellennamen des Kunden. Sie gehört nicht in dieses Repository.

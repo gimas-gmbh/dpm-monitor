@@ -255,6 +255,13 @@ Describe 'Invoke-DpmMonitorEvaluation' {
             ($e.Items | Where-Object LogicalPath -eq 'SRV-SQL01\db03').Status | Should -Be 'Ok'
             $e.Notices.Count | Should -Be 0
         }
+        It 'does not report an expired exclusion while a wider one is active' {
+            $expired = New-Exclusion -Until '2026-11-01'
+            $server = [pscustomobject]@{ ProtectionGroup = 'PG SQL'; ProductionServerName = 'srv-sql01.example.local'; Reason = 'Server wird abgelöst' }
+            $e = Invoke-DpmMonitorEvaluation -State $state -Config (New-TestConfig @{ Exclusions = @($expired, $server) }) -Now $now -TimeZone $Tz
+            ($e.Items | Where-Object LogicalPath -eq 'SRV-SQL01\db02').Status | Should -Be 'Excluded'
+            $e.Notices.Count | Should -Be 0
+        }
         It 'reports exclusions that match nothing' {
             $cfg = New-TestConfig @{ Exclusions = @((New-Exclusion -Path 'SRV-SQL01\gone')) }
             $e = Invoke-DpmMonitorEvaluation -State $state -Config $cfg -Now $now -TimeZone $Tz
@@ -289,9 +296,11 @@ Describe 'Invoke-DpmMonitorEvaluation' {
             $pgRule = [pscustomobject]@{ ProtectionGroup = 'PG SQL'; MaxAgeHours = 24 }
             $serverRule = [pscustomobject]@{ ProtectionGroup = 'PG SQL'; ProductionServerName = 'srv-sql01.example.local'; MaxAgeHours = 168 }
             $dsRule = [pscustomobject]@{ ProductionServerName = 'srv-sql01.example.local'; LogicalPath = 'SRV-SQL01\db02'; MaxAgeHours = 24 }
-            $e = Invoke-DpmMonitorEvaluation -State $state -Config (New-TestConfig @{ Overrides = @($pgRule, $serverRule, $dsRule) }) -Now $friday -TimeZone $Tz
-            ($e.Items | Where-Object LogicalPath -eq 'SRV-SQL01\db01').Status | Should -Be 'Ok'
-            ($e.Items | Where-Object LogicalPath -eq 'SRV-SQL01\db02').Status | Should -Be 'Failed'
+            foreach ($order in @(@($pgRule, $serverRule, $dsRule), @($dsRule, $serverRule, $pgRule))) {
+                $e = Invoke-DpmMonitorEvaluation -State $state -Config (New-TestConfig @{ Overrides = $order }) -Now $friday -TimeZone $Tz
+                ($e.Items | Where-Object LogicalPath -eq 'SRV-SQL01\db01').Status | Should -Be 'Ok'
+                ($e.Items | Where-Object LogicalPath -eq 'SRV-SQL01\db02').Status | Should -Be 'Failed'
+            }
         }
         It 'uses the global fallback only when no schedule is known' {
             $ds = New-TestDatasource -Latest (L '2026-11-19 08:00')

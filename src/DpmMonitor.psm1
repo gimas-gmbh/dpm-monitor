@@ -464,8 +464,10 @@ function Invoke-DpmMonitorEvaluation {
                 MissedCount          = 0
             }
 
-            # Exclusions: active ones exclude, expired ones are reported once.
+            # Exclusions: active ones exclude. Expired ones are reported once, unless
+            # another active exclusion (e.g. for the whole server) still covers the data source.
             $excluded = $null
+            $expired = @()
             for ($i = 0; $i -lt $exclusions.Count; $i++) {
                 $ex = $exclusions[$i]
                 if (-not (Test-DpmMonitorRuleMatch $ex $pg $ds)) { continue }
@@ -473,7 +475,10 @@ function Invoke-DpmMonitorEvaluation {
                 if (Test-DpmMonitorExclusionActive $ex $localToday) {
                     if ($null -eq $excluded) { $excluded = $ex }
                 }
-                else {
+                else { $expired += $ex }
+            }
+            if ($null -eq $excluded) {
+                foreach ($ex in $expired) {
                     $msg = "Ausnahme abgelaufen am $($ex.Until), wird wieder überwacht: $(Get-DpmMonitorRuleLabel $ex)"
                     if (-not $notices.Contains($msg)) { $notices.Add($msg) }
                 }

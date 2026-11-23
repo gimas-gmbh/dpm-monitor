@@ -174,7 +174,10 @@ function New-ScopeChoice {
     $groups = @(Get-DpmMonitorRuleTarget -Item $Items -Scope ProtectionGroup)
     $dsText = if ($Items.Count -eq 1) { 'Nur diese Datenquelle' } else { "Nur die $($Items.Count) ausgewählten Datenquellen" }
     $serverText = if ($servers.Count -eq 1) { 'Alle Datenquellen von Server „{0}“ in Schutzgruppe „{1}“' -f $servers[0].ProductionServerName, $servers[0].ProtectionGroup }
-    else { "Alle Datenquellen dieser Server, je in ihrer Schutzgruppe ($($servers.Count) Server)" }
+    else {
+        $serverCount = @($servers | ForEach-Object { $_.ProductionServerName.ToLowerInvariant() } | Sort-Object -Unique).Count
+        "Alle Datenquellen dieser Server, je in ihrer Schutzgruppe ($serverCount Server, $($servers.Count) Einträge)"
+    }
     $groupText = if ($groups.Count -eq 1) { 'Ganze Schutzgruppe „{0}“' -f $groups[0].ProtectionGroup }
     else { 'Ganze Schutzgruppen ' + (@($groups | ForEach-Object { '„{0}“' -f $_.ProtectionGroup }) -join ', ') }
     $maxSize = New-ScaledSize 480 0

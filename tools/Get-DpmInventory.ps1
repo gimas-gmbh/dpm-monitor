@@ -30,9 +30,13 @@ $ErrorActionPreference = 'Stop'
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host 'Starte mit Administratorrechten neu ...'
-    Start-Process -FilePath powershell.exe -Verb RunAs -ArgumentList @(
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`""
-    )
+    $elevatedArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
+    # Pass on the parameters given, otherwise e.g. -SkipRecoveryPoints is lost.
+    foreach ($p in $PSBoundParameters.GetEnumerator()) {
+        if ($p.Value -is [switch]) { if ($p.Value) { $elevatedArgs += "-$($p.Key)" } }
+        else { $elevatedArgs += "-$($p.Key)"; $elevatedArgs += "$($p.Value)" }
+    }
+    Start-Process -FilePath powershell.exe -Verb RunAs -ArgumentList $elevatedArgs
     return
 }
 
@@ -375,10 +379,16 @@ try {
             $timings = New-Object System.Collections.Generic.List[object]
             $samples = @{}   # one sample recovery point per type, source and storage location
             $hasOnline = (Get-Command Get-DPMRecoveryPoint).Parameters.ContainsKey('Online')
-            $onlinePgs = @($script:onlineByPg.Keys | Where-Object { $script:onlineByPg[$_] })
-            $unknownPgs = @($script:pgs | ForEach-Object { $_.FriendlyName } | Where-Object { -not $script:onlineByPg.ContainsKey($_) })
             if ($hasOnline) {
-                Write-Host "   Online-Abfrage nur fuer Schutzgruppen mit Online-Zeitplan: $($onlinePgs.Count) bekannt, $($unknownPgs.Count) unbekannt"
+                # Which groups get the slow -Online query, so the decision can be checked afterwards.
+                Write-Host '   Online-Abfrage je Schutzgruppe:'
+                foreach ($pg in $script:pgs) {
+                    $name = $pg.FriendlyName
+                    $decision = if (-not $script:onlineByPg.ContainsKey($name)) { 'ja (Zeitplan unbekannt)' }
+                    elseif ($script:onlineByPg[$name]) { 'ja (Online-Zeitplan vorhanden)' }
+                    else { 'nein (kein Online-Zeitplan)' }
+                    Write-Host "     $($name): $decision"
+                }
             }
             Write-Host '   Kann bei vielen Datenquellen lange dauern. Bei Strg+C werden die bis dahin gelesenen'
             Write-Host '   Recovery Points gespeichert und die ZIP trotzdem erstellt.'
@@ -485,9 +495,6 @@ try {
             }
             finally {
                 Write-Progress -Activity 'Recovery Points lesen' -Completed
-                if (-not $completed) {
-                    $script:problems.Add("Recovery Points abgebrochen bei Datenquelle $n von $($dsEntries.Count), Teilergebnis gespeichert")
-                }
                 Write-Host ('   Dauer insgesamt: {0:N1} min' -f $total.Elapsed.TotalMinutes)
                 Save-Csv '43_recoverypoints_abrufdauer.csv' $timings.ToArray()
                 # Same columns for every row, otherwise Export-Csv takes them from the first row only.
@@ -499,6 +506,9 @@ try {
                         $samples[$_] | Format-List * | Out-String -Width 4096
                         $samples[$_] | Get-Member | Out-String -Width 4096
                     })
+                }
+                if (-not $completed) {
+                    $script:problems.Add("Recovery Points abgebrochen bei Datenquelle $n von $($dsEntries.Count), Teilergebnis gespeichert")
                 }
             }
         }
