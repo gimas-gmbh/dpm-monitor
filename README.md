@@ -57,7 +57,9 @@ eines DPM-Servers aus. Es ändert nichts.
 
 Die Wiederherstellungspunkte liest das Skript zuletzt, weil das bei vielen Datenquellen lange dauert; die Konsole
 zeigt Dauer und Restzeit je Datenquelle. Online-Punkte fragt es nur bei Schutzgruppen mit Online-Zeitplan ab
-(oder wenn das unbekannt ist). Ein Abbruch mit Strg+C speichert das Teilergebnis und erstellt die ZIP trotzdem. Ohne Wiederherstellungspunkte:
+(oder wenn das unbekannt ist). Die Ergebnisse werden nach jeder Datenquelle gespeichert. Strg+C, Q oder Esc beenden
+den Schritt nach der aktuellen Datenquelle, danach entsteht die ZIP; `-RecoveryPointMaxMinutes 30` setzt eine
+Zeitgrenze. Ohne Wiederherstellungspunkte:
 `powershell.exe -ExecutionPolicy Bypass -File Get-DpmInventory.ps1 -SkipRecoveryPoints`.
 
 Die ZIP enthält Server-, Domänen- und Datenquellennamen des Kunden. Sie gehört nicht in dieses Repository.

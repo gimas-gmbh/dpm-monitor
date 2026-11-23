@@ -73,6 +73,9 @@ der Dienst hängt oder die Prüfung selbst nicht mehr läuft.
   die Schrift wird unscharf. Abhilfe: `SetProcessDPIAware()` vor dem ersten Fenster und Pixelmaße mit
   dem DPI-Faktor skalieren (Schriften in Punkt skalieren selbst).
 - In der Windows Sandbox lässt sich `Microsoft.PowerShell.Archive` (`Expand-Archive`) nicht laden.
+- Strg+C in einem Konsolenskript unter Windows PowerShell 5.1: `finally`-Blöcke laufen nicht verlässlich zu Ende
+  (gesehen: weder Speichern noch `Stop-Transcript` noch ZIP). Wer bei Abbruch noch etwas tun muss, liest Strg+C
+  mit `[Console]::TreatControlCAsInput` als Taste und schreibt Ergebnisse laufend.
 - `Add-Type` mit C#-Quelltext (auch `-MemberDefinition`) startet in Windows PowerShell 5.1 bei jedem Aufruf den
   C#-Compiler; das kostet auf Servern Sekunden. Für einzelne P/Invokes `Reflection.Emit` nutzen.
 - Windows PowerShell 5.1 macht Stderr nativer Programme bei `2>&1` zu Fehlerobjekten; mit
@@ -144,9 +147,14 @@ deutsche Oberfläche, 26 bzw. 139 Datenquellen, 2 bzw. 3 Schutzgruppen; Stand 20
   Ohne aktuellen Bandpunkt waren genau die 13 inkonsistenten, seit Langem nicht mehr gesicherten Datenquellen.
 - `RPExpirtyTime` (sic) ist immer `0001-01-01`, `RetentionType` leer.
 - Laufzeit: 139 Datenquellen mit je einem Aufruf ohne und einem mit `-Online` brauchten knapp 3 h (rund 75 s pro
-  Datenquelle). Für die Prüfung alle 4 h ist `Get-DPMRecoveryPoint` damit zu langsam; eine Bandüberwachung
-  muss anders oder seltener prüfen. Wie sich die Zeit auf die beiden Aufrufe verteilt, zeigt der nächste Lauf
-  (`43_recoverypoints_abrufdauer.csv`).
+  Datenquelle). Im zweiten Lauf brauchten SQL-Datenquellen nur 1–4 s, die erste Hyper-V-Datenquelle hing über
+  6 min. Vermutete Ursache: Die Bestandsaufnahme las alle Eigenschaften der Punkte, und manche (z. B.
+  `FileSpecifications`, `PhysicalPath`, `ReferencedROList`, `DataSource`) lädt DPM erst beim Zugriff nach. Sie liest
+  jetzt nur eine feste Liste und misst Abruf, Verarbeitung (`43_recoverypoints_abrufdauer.csv`) und je Art von
+  Punkt die Lesedauer der gelesenen Eigenschaften (`44_recoverypoint_eigenschaften_dauer.csv`; die verdächtigen
+  liest sie nicht mehr, ein schneller Lauf bestätigt die Vermutung also nur indirekt). Ob `Get-DPMRecoveryPoint`
+  für eine Bandüberwachung schnell genug ist, zeigt der nächste Lauf; für die Prüfung alle 4 h war es bisher zu
+  langsam.
 
 *Alerts* (zweiter Server, Stand 2026-11-23)
 - Offen waren zwei `ShadowCopyFailedAlert` der Stufe Error (unter 1 h offen) und zwei Warnungen
@@ -220,3 +228,4 @@ Neue Weggabelungen und Abweichungen von Abschnitt 3 hier eintragen: Datum, Entsc
 | 2026-11-23 | Ausnahmen und abweichende Regeln auch für einen Server innerhalb einer Schutzgruppe (`ProtectionGroup` + `ProductionServerName`, ohne Pfad). Vorrang bei Regeln: Datenquelle vor Server vor Schutzgruppe. Die Oberfläche erlaubt Mehrfachauswahl und legt je Ziel einen Eintrag an (gleicher Grund, gleiches Ablaufdatum). Bei mehreren aktiven Ausnahmen liefert die spezifischste den Grund; eine abgelaufene Ausnahme erscheint nur als Hinweis, wenn keine andere aktive die Datenquelle noch ausnimmt; Regeln für ausgenommene Datenquellen gelten nicht als „passt zu keiner Datenquelle“ | Zwischenebene, wenn ein Server abgelöst wird oder mehrere Datenquellen eines Servers denselben Grund haben; Mehrfachauswahl spart Klicks bei vielen Datenquellen. Schema bleibt 1, ältere Versionen würden solche Einträge ablehnen, ein Downgrade ist aber ohnehin ausgeschlossen | Server über alle Schutzgruppen (unklarer Bezug); ein Eintrag mit Liste von Zielen (komplizierteres Schema, Entfernen einzelner Ziele schwerer) |
 | 2026-11-23 | Bestandsaufnahme: Recovery Points zuletzt lesen, `-Online` nur bei Schutzgruppen mit Online-Zeitplan (oder unbekanntem), Dauer je Datenquelle protokollieren, Teilergebnis bei Abbruch speichern, Schalter `-SkipRecoveryPoints` | Der Schritt dauerte bei 139 Datenquellen sehr lange; die Dauer pro Aufruf zeigt außerdem, ob `Get-DPMRecoveryPoint` für eine spätere Langzeitüberwachung schnell genug ist | Nur eine Stichprobe von Datenquellen lesen (verliert seltene Band-/Online-Punkte) |
 | 2026-11-23 | Oberfläche startet schneller: Neustart mit Administratorrechten vor dem Laden von Modul und WinForms, P/Invoke für DPI ohne C#-Compiler, DPM wird in einem Hintergrund-Runspace gelesen (einer pro Fenster, STA, derselbe Thread für jedes Neuladen) und per Timer übernommen; die Dauer steht in der Zusammenfassung | Start über die Verknüpfung lud alles doppelt; DPM-Modul und Verbindung kosten Sekunden, das Fenster war so lange gesperrt. Kann der Runspace nicht gestartet werden, liest die Oberfläche wie bisher im Vordergrund | Parallele Abfragen je Schutzgruppe (gleiche DPM-Verbindung, kaum Gewinn, mehr Komplexität) |
+| 2026-11-23 | Bestandsaufnahme: Recovery Points nur mit fester Liste von Eigenschaften lesen, Ergebnisse nach jeder Datenquelle anhängen, Strg+C für den ganzen Lauf als Taste lesen (mit Q/Esc: Schritt nach der aktuellen Datenquelle beenden), Zeitgrenze `-RecoveryPointMaxMinutes`. Ersetzt „Teilergebnis bei Abbruch speichern“ per `finally` | Ein Lauf hing bei der ersten Hyper-V-Datenquelle; Strg+C beendete dann das Skript ohne Speichern und ohne ZIP | Strg+C weiter hart abbrechen lassen und nur laufend schreiben (keine ZIP, Transkript offen) |
